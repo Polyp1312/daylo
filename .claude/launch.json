@@ -1,1 +1,11 @@
-{"version":"0.0.1","configurations":[{"name":"YourDay","runtimeExecutable":"npm","runtimeArgs":["run","dev"],"port":5175}]}
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "yourday-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    }
+  ]
+}

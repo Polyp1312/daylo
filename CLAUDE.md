@@ -5,60 +5,108 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev      # Start dev server (Vite + embedded Express API on same port)
-npm run build    # Production build
+npm run dev      # Vite dev server + Express API on port 5174 (HMR for frontend only)
+npm run build    # Production build → dist/
+npm start        # Production server: node server.js, serves dist/ on PORT (default 3000)
 npm run lint     # ESLint
 ```
 
-There is no separate backend process. The Express API is embedded directly inside `vite.config.js` as a Vite plugin (`configureServer`). **Changing `vite.config.js` requires a full server restart** — HMR does not pick it up.
+**Critical:** The Express API is embedded in `vite.config.js` as a Vite plugin (`apiPlugin → configureServer`). Any change to `api/` or `vite.config.js` requires a **full dev-server restart** — HMR does not pick them up.
 
-**HMR trigger on Windows**: The `Write` tool doesn't always trigger Vite's file watcher. If a component edit doesn't hot-reload, bump the version comment at the top of the file (`// v2` → `// v3`).
+**HMR on Windows:** If a component edit doesn't hot-reload, bump the version comment at the top of the file (`// v4` → `// v5`).
 
 ## Architecture
 
-### Backend (embedded in Vite)
-`vite.config.js` mounts Express middleware on the Vite dev server. All `/api/*` routes live there:
-- `POST /api/auth/register` — bcrypt hash, 6-digit verification code, Ethereal email preview
-- `POST /api/auth/verify` — validates code, returns JWT
-- `POST /api/auth/login` — bcrypt compare, returns JWT
-- `GET  /api/auth/me` — validates JWT from `Authorization: Bearer` header
-- `GET  /api/users/search?q=&exclude=` — searches verified users by username/email
+### Request flow
+```
+Browser → Vite dev server :5174
+              └─ Express middleware (apiPlugin in vite.config.js)
+                      └─ api/routes.js   ← all /api/* handlers
+                      └─ /uploads/*      ← static video + thumbnail files
+```
+In production, `server.js` mounts the same `registerRoutes()` on a plain Express app serving `dist/`.
 
-**Database**: `daylo-db.json` (flat JSON file, `fs.readFileSync`/`writeFileSync`). User shape: `{ id (UUID), email, username, hash, code, verified, createdAt }`.
+### Backend (`api/`)
 
-JWT secret is hardcoded as `daylo-secret-2025`. Token expiry: 30 days. Token stored in `localStorage` under key `daylo_token`.
+**`api/db.js`** — Opens `daylo.db` (SQLite, WAL mode). All schema is defined here with `CREATE TABLE IF NOT EXISTS`. Safe column migrations use `try { db.exec('ALTER TABLE ...') } catch {}`. Tables:
 
-### Auth flow
-`AuthContext` (`src/context/AuthContext.jsx`) handles the JWT lifecycle. On mount it calls `/api/auth/me` to restore the session. Exposes: `signUp`, `verifyCode`, `signIn`, `signOut`, and `user` (the decoded JWT payload: `{ id, email, username }`).
+| Table | Purpose |
+|---|---|
+| `users` | Auth: email, username, bcrypt hash, 6-digit verification code |
+| `friends` | Bidirectional friendship edges |
+| `friend_requests` | Pending requests |
+| `notifications` | In-app notifications (max 50/user, trimmed on insert) |
+| `vlogs` | Videos: filename, processed_filename, duration, clip_count, emoji, title, thumbnail, status |
+| `reactions` | Emoji reactions per vlog per user (👍 ❤️ 😂), composite PK prevents duplicates |
+| `push_subscriptions` | Web Push endpoint + keys per user, unique on endpoint |
+| `config` | Key-value store; used for VAPID key persistence |
 
-`src/lib/api.js` is the thin fetch wrapper — reads the JWT from localStorage and adds the `Authorization` header automatically.
+**`api/routes.js`** — All `/api/*` endpoints via `registerRoutes(app)`. Auth is inline (`authUser(req)` → JWT verify). Key helpers at module level:
 
-> `src/lib/supabase.js` and `src/lib/localAuth.js` are legacy stubs — not used anywhere.
+- **VAPID init**: Keys auto-generated on first run, stored in `config` table, set on `webpush` immediately.
+- **`findFfmpeg()`**: Walks the winget package path on Windows to locate `ffmpeg.exe` without relying on `$PATH`.
+- **`ffmpegAvailable`**: Set asynchronously at startup via `spawn`. Safe to check in upload handler (uploads happen after user interaction).
+- **`runKiSchnitt(vlogId, userId, inputPath)`**: Fires and forgets — runs `ffmpeg` in background, applies colour grade + audio normalisation, saves `{name}_ki.mp4`, updates `vlogs.status` to `'ready'` (or `'failed'`).
+- **`notifyFriends(uploaderId, username)`**: Sends both Resend email and Web Push to all verified friends.
+- **`calcStreak(userId)`**: Counts consecutive UTC days with at least one vlog, returned in `GET /api/vlogs/my`.
+- **`formatVlog(row, ownerId, viewerId?)`**: Always use `processed_filename ?? filename` for the URL. Embeds reactions with per-viewer `mine` flag.
 
-### App state
-`AppContext` (`src/context/AppContext.jsx`) manages all social data: friends, groups, vlogs. State is **persisted to localStorage namespaced by user ID** (`daylo_app_${uid}`), so multiple accounts on the same browser are fully isolated.
+**Express 5 gotcha:** Never pass middleware as extra args to route definitions (`app.get(path, mw, handler)`) — it silently breaks route matching. Inline the auth check instead.
 
-Key helpers:
-- `formatUser(u)` — converts a backend user `{ id, email, username }` to a UI object `{ id, name, initials, color }`. Color is deterministically derived from the UUID via `deriveColor()` using a fixed palette. **Always call this before storing a user in friends/members.**
-- `getUser(id)` — looks up any user (self or friend) from an in-memory cache.
-- `addFriend(userObj)` — takes a **full formatted user object**, not just an ID.
-- `addMember(gid, userObj)` — same, takes a full object.
+### Frontend state
 
-Group rotation: each group has a `rotation` array (member IDs), `todayIdx`, and `lastRotationDate` (ISO date string). `advanceRotation()` bumps `todayIdx` once per calendar day on load.
+Two contexts wrap the entire app:
 
-### Views & routing
-There is no router library. Navigation is `useState`-based:
-- `main.jsx` renders `<AuthView>` (unauthenticated) or `<App>` wrapped in `<AppProvider>` (authenticated).
-- `App.jsx` owns the bottom tab bar and switches between `dashboard`, `record`, `reveal`, `group`, `profile` views via a `view` state string.
-- Each view (`GroupView`, `ProfileView`) manages its own sub-screens (`list`, `detail`, `add-member`, etc.) internally with `AnimatePresence mode="wait"`.
+- **`AuthContext`** (`src/context/AuthContext.jsx`) — `user`, `loading`, login/logout/verify. Token stored in `localStorage` as `daylo_token`. Session restored via `GET /api/auth/me` on mount.
+- **`AppContext`** (`src/context/AppContext.jsx`) — social state + side effects:
+  - Friends, requests, groups, vlogs, streak, notifications, presences
+  - **Groups are localStorage-only** (`daylo_groups_{uid}`). The server has no group data. `advanceRotation()` bumps the rotation index once per UTC day on load.
+  - **Vlog polling**: When any vlog has `status === 'processing'`, AppContext polls `/api/vlogs/my` every 5 s until all are `'ready'`.
+  - **Push setup**: On login, registers `public/sw.js`, requests `Notification` permission, subscribes via `pushManager.subscribe`, POSTs the subscription to `/api/push/subscribe`.
+  - `formatUser(u)` converts `{id, email, username}` → `{id, name, initials, color}`. Color is deterministic from UUID. Always call before storing a user in friends/members.
 
-All animations use **Framer Motion**. The app is mobile-first, constrained to `max-w-[390px]`.
+### Navigation
+
+No router library. `main.jsx` renders `<AuthView>` when unauthenticated, `<App>` inside `<AppProvider>` when logged in.
+
+`App.jsx` owns a `view` state string (`dashboard | record | reveal | group | profile`) and a bottom tab bar. Views are swapped via `<AnimatePresence mode="wait">`. `RevealView` is defined inline in `App.jsx` (not a separate file). All other views are in `src/views/`.
+
+Each view (`GroupView`, `ProfileView`) manages its own sub-screen stack internally with a `screen` state + `AnimatePresence`.
+
+### Video upload flow
+
+1. User records clips in `RecordView` via `MediaRecorder` on a canvas (for filter/mirror/zoom/sticker baking).
+2. Pressing "Fertig" opens `TitleScreen` (thumbnail preview + text input). User sets optional title, then confirms.
+3. `ProcessingScreen` merges clip blobs, uploads via XHR (`api.vlogs.upload`) with real progress %. Sends `title`, `thumbnail` (first clip's base64 frame), `duration`, `clipCount`, `emoji`.
+4. Server saves the `.webm`, decodes and saves the thumbnail as `_thumb.jpg`, inserts the DB row with `status='processing'` if ffmpeg is available.
+5. `runKiSchnitt` runs in background → produces `_ki.mp4` → updates status.
+6. `onDone(vlog)` → `addVlog(vlog)` prepends to `myVlogs` in AppContext.
 
 ### Styling
-Tailwind CSS v4 via `@tailwindcss/vite` — **no `tailwind.config.js`**. All colors are inline hex values; the design system palette is:
-- Background: `#0A0A0B` (page), `#141415` (cards), `#1C1C1E` (inputs), `#2C2C2E` (borders/dividers)
-- Text: `white` (primary), `#8E8E93` (secondary), `#3A3A3C` (placeholder)
-- Brand: `#7B61FF` (primary purple), `#00D9FF` (cyan accent)
 
-### QR code (mobile preview)
-`App.jsx` has a hardcoded `NETWORK_URL = 'http://192.168.178.86:5175'` used for the QR modal. Update this IP when testing on a different network.
+Tailwind CSS v4 via `@tailwindcss/vite` — **no `tailwind.config.js`**. All colours are inline hex values:
+- Page bg: `#0A0A0B` · Card: `#141415` · Input: `#1C1C1E` · Border: `#2C2C2E`
+- Text: `white` / `#8E8E93` (secondary)
+- Brand: `#7B61FF` (purple) / `#00D9FF` (cyan)
+
+App is mobile-first, `max-w-[390px]`. On `md:` breakpoints it renders as a centred phone-frame card with shadow. All animations use Framer Motion.
+
+## Environment variables
+
+```
+RESEND_API_KEY=...   # Email sending. If missing, codes are only logged.
+JWT_SECRET=...       # JWT signing. Fallback: 'daylo-secret-2025'
+PORT=3000            # Production server port.
+```
+
+Read by `dotenv/config` at the top of both `server.js` and `api/routes.js`.
+
+## Key gotchas
+
+- **`api/` changes require server restart** — Vite HMR does not cover the Express plugin.
+- **Groups are client-side only** — `advanceRotation` runs on load; the server never knows which group a user is in. Push/email notifications go to all friends, not group members.
+- **ffmpeg path**: `findFfmpeg()` auto-locates the winget install under `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg*`. Falls back to `'ffmpeg'` in `$PATH`.
+- **`processed_filename` takes precedence**: `formatVlog` always serves the `_ki.mp4` if present; the raw `.webm` is kept as backup.
+- **VAPID keys** are auto-generated and persisted in the `config` table on first run — do not manually delete them or all existing push subscriptions will break.
+- **Stale push subscriptions** are deleted on send failure inside `notifyFriends`.
+- Dead code in `src/lib/`: `videoDB.js`, `supabase.js`, `localAuth.js` — never imported.

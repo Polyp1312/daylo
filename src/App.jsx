@@ -1,4 +1,4 @@
-// v3
+// v4
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -14,7 +14,7 @@ import GroupView      from './views/GroupView'
 import ProfileView    from './views/ProfileView'
 import { useApp }     from './context/AppContext'
 import { useAuth }    from './context/AuthContext'
-import { loadVlogClips } from './lib/videoDB'
+import { api }        from './lib/api'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const pad = n => String(n).padStart(2, '0')
@@ -194,6 +194,7 @@ function BottomNav({ activeTab, onNavigate }) {
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToGroup, onGoToRecord }) {
+  // onReveal(userId?) — null = my own vlogs, string = specific user's vlogs
   const { user } = useAuth()
   const { groups, getUser, myVlogs, requests, notifications } = useApp()
 
@@ -278,7 +279,7 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
                   <span className="text-xs text-[#8E8E93]">{timerStr} verbleibend</span>
                 </div>
               </div>
-              <motion.button whileTap={{ scale: 0.88 }} onClick={onReveal}
+              <motion.button whileTap={{ scale: 0.88 }} onClick={() => onReveal(todayUserId)}
                 className="w-10 h-10 rounded-full bg-[#7B61FF]/20 flex items-center justify-center flex-shrink-0">
                 <Play size={15} className="text-[#7B61FF] ml-0.5" fill="#7B61FF" />
               </motion.button>
@@ -399,7 +400,7 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
           <div className="space-y-3">
             {myVlogs.slice(0, 3).map(v => (
               <motion.div key={v.id}
-                whileTap={{ scale: 0.97 }} onClick={onReveal}
+                whileTap={{ scale: 0.97 }} onClick={() => onReveal(null)}
                 className="flex items-center gap-3 bg-[#141415] border border-[#2C2C2E] rounded-2xl p-3.5 cursor-pointer">
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0"
                   style={{ background: '#7B61FF15' }}>
@@ -432,31 +433,35 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
   )
 }
 
+const REACTION_TYPES = ['👍', '❤️', '😂']
+
 // ── Reveal View ───────────────────────────────────────────────────────────────
-function RevealView({ onBack }) {
+function RevealView({ onBack, targetUserId }) {
+  const { user }    = useAuth()
   const { myVlogs } = useApp()
-  const [selected, setSelected] = useState(null)
-  const [clips,    setClips]    = useState(null)
-  const [urls,     setUrls]     = useState([])
-  const [loading,  setLoading]  = useState(false)
+  const [vlogs,     setVlogs]     = useState(null)
+  const [selected,  setSelected]  = useState(null)
+  const [rxMap,     setRxMap]     = useState({})   // vlogId → reactions[]
+
+  const isMe = !targetUserId || targetUserId === user?.id
 
   useEffect(() => {
-    return () => urls.forEach(u => URL.revokeObjectURL(u))
-  }, [urls])
+    if (isMe) {
+      setVlogs(myVlogs)
+    } else {
+      api.vlogs.userList(targetUserId)
+        .then(d => setVlogs(d.vlogs ?? []))
+        .catch(() => setVlogs([]))
+    }
+  }, [isMe, targetUserId, myVlogs])
 
-  const playVlog = async (vlog) => {
-    setLoading(true)
-    setUrls(prev => { prev.forEach(u => URL.revokeObjectURL(u)); return [] })
-    setClips(null)
-    try {
-      const stored = await loadVlogClips(vlog.id)
-      if (!stored?.length) { setClips([]); setLoading(false); setSelected(vlog.id); return }
-      const newUrls = stored.map(c => URL.createObjectURL(c.blob))
-      setUrls(newUrls)
-      setClips(stored.map((c, i) => ({ ...c, url: newUrls[i] })))
-    } catch { setClips([]) }
-    setLoading(false)
-    setSelected(vlog.id)
+  const selectedVlog = vlogs?.find(v => v.id === selected)
+
+  const getReactions = vlog => rxMap[vlog.id] ?? vlog.reactions ?? []
+
+  const handleReact = async (vlogId, type) => {
+    const data = await api.vlogs.react(vlogId, type)
+    if (data.reactions) setRxMap(p => ({ ...p, [vlogId]: data.reactions }))
   }
 
   return (
@@ -466,58 +471,99 @@ function RevealView({ onBack }) {
           className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center">
           <ChevronLeft size={18} className="text-white" />
         </motion.button>
-        <span className="text-white font-semibold">Vlogs ansehen</span>
+        <span className="text-white font-semibold">
+          {isMe ? 'Meine Vlogs' : 'Vlogs ansehen'}
+        </span>
         <div className="w-10" />
       </div>
 
       {/* Video player */}
-      {selected !== null && (
-        <div className="mx-5 rounded-3xl overflow-hidden bg-[#141415] border border-[#2C2C2E] mb-5"
-          style={{ aspectRatio: '9/16', maxHeight: '55vh' }}>
-          {loading ? (
-            <div className="w-full h-full flex items-center justify-center">
-              <div className="w-8 h-8 rounded-full border-2 border-[#7B61FF] border-t-transparent animate-spin" />
-            </div>
-          ) : clips?.length ? (
-            <video src={clips[0].url} controls autoPlay playsInline
-              className="w-full h-full object-cover"
-              style={{ transform: 'scaleX(-1)' }} />
-          ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-              <span className="text-4xl">📭</span>
-              <p className="text-[#8E8E93] text-sm">Video nicht mehr verfügbar</p>
-            </div>
+      {selectedVlog && (
+        <div className="mx-5 mb-3">
+          <div className="rounded-3xl overflow-hidden bg-[#141415] border border-[#2C2C2E]"
+            style={{ aspectRatio: '9/16', maxHeight: '55vh' }}>
+            <video
+              key={selectedVlog.url}
+              src={selectedVlog.url}
+              controls autoPlay playsInline
+              className="w-full h-full object-cover" />
+          </div>
+
+          {/* Vlog title */}
+          {selectedVlog.title && (
+            <p className="text-white font-semibold text-base mt-3 px-1">{selectedVlog.title}</p>
           )}
+
+          {/* Reactions */}
+          <div className="flex gap-2 mt-3 px-1">
+            {REACTION_TYPES.map(type => {
+              const rx = getReactions(selectedVlog).find(r => r.type === type)
+              const count = rx?.count ?? 0
+              const mine  = rx?.mine  ?? false
+              return (
+                <motion.button key={type} whileTap={{ scale: 0.85 }}
+                  onClick={() => handleReact(selectedVlog.id, type)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors"
+                  style={{
+                    background: mine ? 'rgba(123,97,255,0.2)' : 'rgba(44,44,46,1)',
+                    border: `1.5px solid ${mine ? 'rgba(123,97,255,0.5)' : 'transparent'}`,
+                  }}>
+                  <span>{type}</span>
+                  {count > 0 && <span className="text-xs" style={{ color: mine ? '#7B61FF' : '#8E8E93' }}>{count}</span>}
+                </motion.button>
+              )
+            })}
+          </div>
         </div>
       )}
 
-      {/* Vlog list / empty state */}
-      {myVlogs.length === 0 ? (
+      {/* Loading */}
+      {vlogs === null && (
+        <div className="flex justify-center pt-20">
+          <div className="w-8 h-8 rounded-full border-2 border-[#7B61FF] border-t-transparent animate-spin" />
+        </div>
+      )}
+
+      {/* Empty state */}
+      {vlogs !== null && vlogs.length === 0 && (
         <div className="mx-5 rounded-3xl bg-[#141415] border border-[#2C2C2E] p-12 flex flex-col items-center gap-3">
           <span className="text-5xl">🎬</span>
           <p className="text-white font-semibold">Noch keine Vlogs</p>
           <p className="text-[#8E8E93] text-sm text-center">Nimm heute deinen Tag auf</p>
         </div>
-      ) : (
+      )}
+
+      {/* Vlog list */}
+      {vlogs?.length > 0 && (
         <div className="px-5 space-y-3">
-          {myVlogs.map((v, i) => (
+          {vlogs.map((v, i) => (
             <motion.div key={v.id}
               initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
               whileTap={{ scale: 0.97 }}
-              onClick={() => playVlog(v)}
+              onClick={() => setSelected(v.id)}
               className={`flex items-center gap-3 rounded-2xl p-3.5 cursor-pointer border transition-colors ${
                 selected === v.id
                   ? 'bg-[#7B61FF]/10 border-[#7B61FF]/30'
                   : 'bg-[#141415] border-[#2C2C2E]'
               }`}>
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0"
-                style={{ background: '#7B61FF15' }}>
-                {v.emoji}
+              {/* Thumbnail or emoji fallback */}
+              <div className="w-12 h-18 rounded-xl overflow-hidden flex-shrink-0"
+                style={{ width: 48, height: 64, background: '#7B61FF15', flexShrink: 0 }}>
+                {v.thumbnail
+                  ? <img src={v.thumbnail} alt="" className="w-full h-full object-cover" />
+                  : <div className="w-full h-full flex items-center justify-center text-2xl">{v.emoji}</div>
+                }
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-white font-semibold text-sm">{v.date}</p>
-                <p className="text-xs text-[#8E8E93] mt-0.5">{v.clips} Clips · {v.duration}s</p>
+                <p className="text-white font-semibold text-sm truncate">{v.title ?? v.date}</p>
+                <p className="text-xs text-[#8E8E93] mt-0.5">{v.date} · {v.clipCount} Clips · {Math.round(v.duration)}s</p>
+                {/* Mini reaction summary */}
+                {(v.reactions?.length > 0) && (
+                  <p className="text-xs text-[#8E8E93] mt-0.5">
+                    {v.reactions.map(r => `${r.type} ${r.count}`).join('  ')}
+                  </p>
+                )}
               </div>
               <div className="w-8 h-8 rounded-full bg-[#7B61FF]/20 flex items-center justify-center flex-shrink-0">
                 <Play size={13} className="text-[#7B61FF] ml-0.5" fill="#7B61FF" />
@@ -536,6 +582,7 @@ export default function App() {
   const [activeTab,         setActiveTab]         = useState('home')
   const [showQR,            setShowQR]            = useState(false)
   const [showNotifications, setShowNotifications] = useState(false)
+  const [revealTarget,      setRevealTarget]      = useState(null)  // userId whose vlogs to show
 
   // Countdown to midnight, synced to real clock
   const [totalSecs, setTotalSecs] = useState(secsUntilMidnight)
@@ -547,18 +594,25 @@ export default function App() {
 
   const { addVlog } = useApp()
 
-  const navigate = (tab, v) => { setActiveTab(tab); setView(v) }
-  const showNav  = view !== 'record'
+  const navigate     = (tab, v) => { setActiveTab(tab); setView(v) }
+  const showNav      = view !== 'record'
+  const openReveal   = (userId = null) => { setRevealTarget(userId); setView('reveal') }
 
   return (
-    <div className="min-h-screen bg-[#0A0A0B] flex justify-center">
-      <div className="relative w-full max-w-[390px] min-h-screen bg-[#0A0A0B] overflow-hidden">
+    <div className="min-h-screen flex justify-center items-start" style={{ background: '#070708' }}>
+      {/* Desktop background — only visible at ≥ md */}
+      <div className="hidden md:block fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at 25% 40%, rgba(123,97,255,0.07) 0%, transparent 55%)' }} />
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at 75% 60%, rgba(0,217,255,0.05) 0%, transparent 50%)' }} />
+      </div>
+
+      <div className="relative w-full max-w-[390px] md:mt-8 md:mb-8 md:rounded-[44px] md:border md:border-[#1C1C1E] md:shadow-[0_32px_80px_rgba(0,0,0,0.7)] min-h-screen md:min-h-0 bg-[#0A0A0B] overflow-hidden">
 
         <AnimatePresence mode="wait">
           {view === 'dashboard' && (
             <Dashboard key="dashboard"
               countdown={countdown}
-              onReveal={() => setView('reveal')}
+              onReveal={openReveal}
               onShowQR={() => setShowQR(true)}
               onShowNotifications={() => setShowNotifications(true)}
               onGoToGroup={() => navigate('group', 'group')}
@@ -567,10 +621,12 @@ export default function App() {
           {view === 'record' && (
             <RecordView key="record"
               onBack={() => navigate('home', 'dashboard')}
-              onDone={clips => { addVlog(clips); navigate('home', 'dashboard') }} />
+              onDone={vlog => { addVlog(vlog); navigate('home', 'dashboard') }} />
           )}
           {view === 'reveal' && (
-            <RevealView key="reveal" onBack={() => setView('dashboard')} />
+            <RevealView key="reveal"
+              onBack={() => setView('dashboard')}
+              targetUserId={revealTarget} />
           )}
           {view === 'group'   && <GroupView   key="group"   />}
           {view === 'profile' && <ProfileView key="profile" />}

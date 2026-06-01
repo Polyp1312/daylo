@@ -1,4 +1,4 @@
-// v5
+// v6
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -221,7 +221,7 @@ function AddFriendScreen({ onBack }) {
 
 // ── Main profile screen ───────────────────────────────────────────────────────
 function ProfileMain({ onAddFriend, onSettings }) {
-  const { me, friends, requests, groups, myVlogs, presences, acceptRequest, declineRequest, removeFriend } = useApp()
+  const { me, friends, requests, groups, myVlogs, myStreak, presences, acceptRequest, declineRequest, removeFriend } = useApp()
   const { user, signOut } = useAuth()
   const [confirmRemove, setConfirmRemove] = useState(null)
 
@@ -262,14 +262,15 @@ function ProfileMain({ onAddFriend, onSettings }) {
         </div>
         <h2 className="text-white font-bold text-xl">{displayName}</h2>
         <p className="text-[#8E8E93] text-sm mt-0.5">{displayEmail}</p>
-        <div className="flex gap-8 mt-5 pt-4 border-t border-[#2C2C2E] w-full justify-around">
+        <div className="flex gap-5 mt-5 pt-4 border-t border-[#2C2C2E] w-full justify-around">
           {[
-            { label: 'Vlogs',   value: myVlogs.length },
-            { label: 'Freunde', value: friends.length },
-            { label: 'Gruppen', value: groups.length  },
+            { label: 'Vlogs',   value: myVlogs.length, suffix: '' },
+            { label: 'Streak',  value: myStreak,       suffix: myStreak > 0 ? ' 🔥' : '' },
+            { label: 'Freunde', value: friends.length, suffix: '' },
+            { label: 'Gruppen', value: groups.length,  suffix: '' },
           ].map(s => (
             <div key={s.label} className="flex flex-col items-center gap-0.5">
-              <span className="text-white font-bold text-2xl">{s.value}</span>
+              <span className="text-white font-bold text-xl leading-tight">{s.value}{s.suffix}</span>
               <span className="text-[#8E8E93] text-xs">{s.label}</span>
             </div>
           ))}

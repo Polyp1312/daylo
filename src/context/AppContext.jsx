@@ -1,8 +1,7 @@
-// v5
+// v6
 import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { useAuth } from './AuthContext'
 import { api } from '../lib/api'
-import { saveVlogClips, deleteVlogClips } from '../lib/videoDB'
 
 const Ctx = createContext(null)
 export const useApp = () => useContext(Ctx)
@@ -19,24 +18,13 @@ export function formatUser(u) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const TODAY    = () => new Date().toISOString().slice(0, 10)
-const EMOJIS   = ['🌅','🎬','🏋️','🌄','🎉','🎵','🏖️','🌙','🍕','🎮','🚀','🌸']
-const randEmoji = () => EMOJIS[Math.floor(Math.random() * EMOJIS.length)]
-const storeKey  = uid => `daylo_app_${uid}`
+const TODAY   = () => new Date().toISOString().slice(0, 10)
+const storeKey = uid => `daylo_groups_${uid}`
 
-function load(uid) {
-  try {
-    const s = JSON.parse(localStorage.getItem(storeKey(uid)) || '{}')
-    const now = Date.now()
-    return {
-      groups:  s.groups  ?? [],
-      myVlogs: (s.myVlogs ?? []).map(v =>
-        v.status === 'processing' && now - v.createdAt > 60_000 ? { ...v, status: 'ready' } : v
-      ),
-    }
-  } catch { return { groups: [], myVlogs: [] } }
+function loadGroups(uid) {
+  try { return JSON.parse(localStorage.getItem(storeKey(uid)) || '[]') } catch { return [] }
 }
-function persist(uid, state) { localStorage.setItem(storeKey(uid), JSON.stringify(state)) }
+function persistGroups(uid, groups) { localStorage.setItem(storeKey(uid), JSON.stringify(groups)) }
 
 function advanceRotation(groups) {
   const today = TODAY()
@@ -46,6 +34,14 @@ function advanceRotation(groups) {
   })
 }
 
+// ── Push helper ──────────────────────────────────────────────────────────────
+function urlBase64ToUint8Array(base64) {
+  const pad = '='.repeat((4 - base64.length % 4) % 4)
+  const b64 = (base64 + pad).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(b64)
+  return Uint8Array.from(raw, c => c.charCodeAt(0))
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 export function AppProvider({ children }) {
   const { user } = useAuth()
@@ -53,8 +49,9 @@ export function AppProvider({ children }) {
 
   const [friends,       setFriends]       = useState([])
   const [requests,      setRequests]      = useState([])
-  const [groups,        setGroups]        = useState(() => advanceRotation(load(uid).groups))
-  const [myVlogs,       setMyVlogs]       = useState(() => load(uid).myVlogs)
+  const [groups,        setGroups]        = useState(() => advanceRotation(loadGroups(uid)))
+  const [myVlogs,       setMyVlogs]       = useState([])
+  const [myStreak,      setMyStreak]      = useState(0)
   const [notifications, setNotifications] = useState([])
   const [presences,     setPresences]     = useState({})
 
@@ -69,16 +66,18 @@ export function AppProvider({ children }) {
     }
     api.friends.list().then(data => { if (data.friends) setFriends(data.friends.map(formatUser)) })
     api.friends.requests().then(data => { if (data.requests) setRequests(data.requests.map(formatUser)) })
-    const d = load(uid)
-    setGroups(advanceRotation(d.groups))
-    setMyVlogs(d.myVlogs)
+    setGroups(advanceRotation(loadGroups(uid)))
+    api.vlogs.myList().then(data => {
+      if (data.vlogs)  setMyVlogs(data.vlogs)
+      if (data.streak != null) setMyStreak(data.streak)
+    })
   }, [uid])
 
-  // Persist groups + vlogs
+  // Persist groups only (vlogs live on server now)
   useEffect(() => {
     if (!uid) return
-    persist(uid, { groups, myVlogs })
-  }, [uid, groups, myVlogs])
+    persistGroups(uid, groups)
+  }, [uid, groups])
 
   // Presence ping + fetch, poll every 60 s
   useEffect(() => {
@@ -104,6 +103,56 @@ export function AppProvider({ children }) {
     fetch()
     const t = setInterval(fetch, 30_000)
     return () => clearInterval(t)
+  }, [uid])
+
+  // Poll vlogs every 5 s while any are still being processed by ffmpeg
+  useEffect(() => {
+    if (!uid) return
+    const hasProcessing = myVlogs.some(v => v.status === 'processing')
+    if (!hasProcessing) return
+    const t = setInterval(() => {
+      api.vlogs.myList().then(data => {
+        if (data.vlogs)           setMyVlogs(data.vlogs)
+        if (data.streak != null)  setMyStreak(data.streak)
+      })
+    }, 5_000)
+    return () => clearInterval(t)
+  }, [uid, myVlogs])
+
+  // Register service worker + subscribe to push on login
+  useEffect(() => {
+    if (!uid) return
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
+    let cancelled = false
+
+    async function setupPush() {
+      try {
+        const reg = await navigator.serviceWorker.register('/sw.js')
+        await navigator.serviceWorker.ready
+        if (cancelled) return
+
+        const permission = await Notification.requestPermission()
+        if (permission !== 'granted' || cancelled) return
+
+        const existing = await reg.pushManager.getSubscription()
+        if (existing) return  // already subscribed
+
+        const { key } = await api.push.vapidKey()
+        if (!key || cancelled) return
+
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(key),
+        })
+        if (cancelled) return
+        await api.push.subscribe(JSON.parse(JSON.stringify(sub)))
+      } catch (err) {
+        if (!cancelled) console.warn('Push-Setup fehlgeschlagen:', err.message)
+      }
+    }
+
+    setupPush()
+    return () => { cancelled = true }
   }, [uid])
 
   const markNotificationsRead = () => {
@@ -168,29 +217,19 @@ export function AppProvider({ children }) {
   }))
 
   // ── Vlogs ─────────────────────────────────────────────────────────────────
-  const addVlog = async (clips) => {
-    const duration = Math.round(clips.reduce((s, c) => s + (c.duration ?? 0), 0))
-    const id       = Date.now()
-    const vlog = {
-      id, createdAt: Date.now(),
-      date:  new Date().toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      clips: clips.length, duration, emoji: randEmoji(), status: 'processing',
-    }
-    // Save blobs to IndexedDB (fire-and-forget, non-blocking)
-    saveVlogClips(id, clips.map(c => ({ blob: c.blob, thumbUrl: c.thumbUrl, duration: c.duration })))
-      .catch(e => console.warn('IndexedDB save failed:', e))
+  const addVlog = (vlog) => {
+    // Called after successful upload — vlog is the server response object
     setMyVlogs(p => [vlog, ...p])
-    setTimeout(() => setMyVlogs(p => p.map(v => v.id === id ? { ...v, status: 'ready' } : v)), 4000)
   }
 
   const deleteVlog = async (vlogId) => {
-    deleteVlogClips(vlogId).catch(() => {})
+    await api.vlogs.delete(vlogId)
     setMyVlogs(p => p.filter(v => v.id !== vlogId))
   }
 
   return (
     <Ctx.Provider value={{
-      me, friends, friendIds, requests, groups, myVlogs,
+      me, friends, friendIds, requests, groups, myVlogs, myStreak,
       notifications, presences,
       getUser, acceptRequest, declineRequest, sendRequest, removeFriend,
       createGroup, deleteGroup, renameGroup, addMember, removeMember,

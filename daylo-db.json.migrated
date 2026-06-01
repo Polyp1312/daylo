@@ -1,0 +1,42 @@
+{
+  "users": [
+    {
+      "id": "0bc966fd-ed9c-41bb-814b-5e4a5e0b23d1",
+      "email": "test@test.de",
+      "username": "testuser",
+      "hash": "$2b$10$wdG2hUwjkmEyLDm0JTQ/euMelh68/N9PaxfUUeqN6QZJtX8VkYHjW",
+      "code": "126486",
+      "verified": true,
+      "createdAt": 1777194339246,
+      "pendingRequests": [
+        "3613feca-8db5-4e31-89b6-c3ae69a1c448"
+      ]
+    },
+    {
+      "id": "3613feca-8db5-4e31-89b6-c3ae69a1c448",
+      "email": "niclas.g.pfeifer@gmail.com",
+      "username": "Polyp23",
+      "hash": "$2b$10$1p5NX252t1tqMkXT7GOgmeiKmvj4Hxksj8VYM6Wy/5CxZFDMhPX5S",
+      "code": "115921",
+      "verified": true,
+      "createdAt": 1777195211428,
+      "friendIds": [
+        "0f2e1d9f-02a3-4cff-99b6-62ce1fd5c07d"
+      ],
+      "lastSeen": 1780340540574
+    },
+    {
+      "id": "0f2e1d9f-02a3-4cff-99b6-62ce1fd5c07d",
+      "email": "niclaspfeifer3@gmail.com",
+      "username": "TEST",
+      "hash": "$2b$10$hAHi7ClP4/NNh6xNT.Jb/OygPIcLcLmFP6Q5bWv4BEwzxg8d1huIa",
+      "code": "922119",
+      "verified": true,
+      "createdAt": 1777284024438,
+      "friendIds": [
+        "3613feca-8db5-4e31-89b6-c3ae69a1c448"
+      ],
+      "pendingRequests": []
+    }
+  ]
+}
