@@ -1,8 +1,9 @@
-// v7 — title input + thumbnail upload
+// v8 — 24h clip collection + tap-to-toggle record button
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, RefreshCw, Check, Sparkles, AlertCircle, Pencil } from 'lucide-react'
 import { api } from '../lib/api'
+import { saveClip, loadTodayClips, deleteClips } from '../lib/clipStore'
 
 const MAX_SEC = 60
 const EMOJIS_VLOG = ['🌅','🎬','🏋️','🌄','🎉','🎵','🏖️','🌙','🍕','🎮','🚀','🌸']
@@ -25,6 +26,13 @@ const EMOJIS = [
   '🔥','💀','😍','🤯','✨','💯','🎬','❤️','⚡','🏆','👑','🎉',
   '🤙','😎','🥶','💫','😂','💪','👀','🫶','🌊','🎵','💥','🫠',
 ]
+
+const formatDur = secs => {
+  if (secs < 60) return `${Math.round(secs)}s`
+  const m = Math.floor(secs / 60)
+  const s = Math.round(secs % 60)
+  return s > 0 ? `${m}m ${s}s` : `${m}m`
+}
 
 // ── Upload / Processing Screen ─────────────────────────────────────────────────
 const UPLOAD_STEPS = [
@@ -76,20 +84,18 @@ function TitleScreen({ firstThumb, onSkip, onConfirm }) {
 }
 
 function ProcessingScreen({ clips, title, onComplete }) {
-  const [step,     setStep]     = useState(0)   // 0=merging 1=uploading 2=done
-  const [progress, setProgress] = useState(0)   // 0-100 upload %
+  const [step,     setStep]     = useState(0)
+  const [progress, setProgress] = useState(0)
   const [error,    setError]    = useState(null)
 
   useEffect(() => {
     let cancelled = false
     const run = async () => {
       try {
-        // Step 0 — merge blobs in browser (instant)
         const mimeType = clips[0]?.blob?.type || 'video/webm'
         const combined = new Blob(clips.map(c => c.blob), { type: mimeType })
         if (cancelled) return
 
-        // Step 1 — upload to server
         setStep(1)
         const duration  = clips.reduce((s, c) => s + (c.duration ?? 0), 0)
         const formData  = new FormData()
@@ -105,7 +111,6 @@ function ProcessingScreen({ clips, title, onComplete }) {
         })
         if (cancelled) return
 
-        // Step 2 — done
         setStep(2)
         setTimeout(() => { if (!cancelled) onComplete(vlog) }, 1000)
       } catch (e) {
@@ -136,7 +141,6 @@ function ProcessingScreen({ clips, title, onComplete }) {
       className="fixed inset-0 z-50 flex flex-col items-center justify-center px-10"
       style={{ background: '#0A0A0B' }}>
 
-      {/* Icon */}
       <div className="relative w-28 h-28 mb-10 flex items-center justify-center">
         {!done ? (
           <>
@@ -165,7 +169,6 @@ function ProcessingScreen({ clips, title, onComplete }) {
         {done ? 'Deine Freunde können ihn jetzt sehen' : 'Dein Vlog wird hochgeladen'}
       </p>
 
-      {/* Steps */}
       <div className="w-full space-y-5">
         {UPLOAD_STEPS.map((s, i) => (
           <div key={i} className="flex items-center gap-4">
@@ -189,7 +192,6 @@ function ProcessingScreen({ clips, title, onComplete }) {
         ))}
       </div>
 
-      {/* Progress bar — shows real upload % */}
       <div className="w-full mt-10 h-1.5 rounded-full bg-[#2C2C2E] overflow-hidden">
         <motion.div className="h-full rounded-full"
           style={{ background: 'linear-gradient(90deg, #7B61FF, #00D9FF)' }}
@@ -227,12 +229,22 @@ export default function RecordView({ onBack, onDone }) {
   const [stickers,     setStickers]     = useState([])
   const [activePanel,  setActivePanel]  = useState(null)
   const [pendingEmoji, setPendingEmoji] = useState(null)
-  const [filterThumbs, setFilterThumbs] = useState(null) // base64 frame for filter previews
+  const [filterThumbs, setFilterThumbs] = useState(null)
   const [showZoom,     setShowZoom]     = useState(false)
 
   const filterCSS = FILTERS[filterIdx].css
   const remaining = Math.max(MAX_SEC - totalSec, 0)
   const progress  = Math.min(((totalSec + (isRecording ? liveTimer : 0)) / MAX_SEC) * 100, 100)
+
+  // ── Load today's clips from IndexedDB on mount ───────────────────────────────
+  useEffect(() => {
+    loadTodayClips().then(saved => {
+      if (!saved.length) return
+      const withKey = saved.map(c => ({ ...c, key: `idb_${c.idbId}` }))
+      setClips(withKey)
+      setTotalSec(withKey.reduce((s, c) => s + c.duration, 0))
+    }).catch(() => {})
+  }, [])
 
   // ── Camera ──────────────────────────────────────────────────────────────────
   const startCamera = useCallback(async (mode) => {
@@ -271,7 +283,6 @@ export default function RecordView({ onBack, onDone }) {
     setSwitching(false)
   }
 
-  // Capture frame for filter preview thumbnails
   const captureFilterThumbs = () => {
     const v = videoRef.current
     if (!v || !v.videoWidth) return
@@ -355,15 +366,21 @@ export default function RecordView({ onBack, onDone }) {
     mr.onstop = async () => {
       stopDrawRef.current?.()
       const duration = (Date.now() - startRef.current) / 1000
-      // Always save clips ≥ 0.08s
       if (duration < 0.08 || chunksRef.current.length === 0) return
       setFlash(true); setTimeout(() => setFlash(false), 220)
       const blob     = new Blob(chunksRef.current, { type: mimeType || 'video/webm' })
       const url      = URL.createObjectURL(blob)
       const thumbUrl = await captureThumb(url)
       const safeDur  = Math.min(duration, remaining)
-      setClips(prev => [...prev, { url, blob, thumbUrl, duration: safeDur }])
+      // Give each clip a stable key so we can update it with the idbId later
+      const clipKey  = `new_${Date.now()}_${Math.random().toString(36).slice(2)}`
+      const newClip  = { key: clipKey, url, blob, thumbUrl, duration: safeDur, idbId: null }
+      setClips(prev => [...prev, newClip])
       setTotalSec(prev => Math.min(+(prev + safeDur).toFixed(2), MAX_SEC))
+      // Persist to IndexedDB so clips survive app close/reopen today
+      saveClip({ blob, thumbUrl, duration: safeDur }).then(idbId => {
+        setClips(prev => prev.map(c => c.key === clipKey ? { ...c, idbId } : c))
+      }).catch(() => {})
     }
     mr.start(100)
     recorderRef.current = mr
@@ -377,7 +394,9 @@ export default function RecordView({ onBack, onDone }) {
   }, [])
 
   const deleteClip = i => {
-    URL.revokeObjectURL(clips[i].url)
+    const clip = clips[i]
+    URL.revokeObjectURL(clip.url)
+    if (clip.idbId != null) deleteClips([clip.idbId]).catch(() => {})
     const next = clips.filter((_, idx) => idx !== i)
     setClips(next)
     setTotalSec(next.reduce((s, c) => s + c.duration, 0))
@@ -425,7 +444,18 @@ export default function RecordView({ onBack, onDone }) {
             onConfirm={t => { setVlogTitle(t); setShowTitle(false); setProcessing(true) }}
           />
         )}
-        {processing && <ProcessingScreen clips={clips} title={vlogTitle} onComplete={onDone} />}
+        {processing && (
+          <ProcessingScreen
+            clips={clips}
+            title={vlogTitle}
+            onComplete={vlog => {
+              // Clear today's clips from IndexedDB after successful upload
+              const idbIds = clips.map(c => c.idbId).filter(Boolean)
+              deleteClips(idbIds).catch(() => {})
+              onDone(vlog)
+            }}
+          />
+        )}
       </AnimatePresence>
 
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -530,7 +560,7 @@ export default function RecordView({ onBack, onDone }) {
         {/* ── Bottom ── */}
         <div className="absolute bottom-0 inset-x-0 z-20 pb-10">
 
-          {/* Filter panel — with live video frame previews */}
+          {/* Filter panel */}
           <AnimatePresence>
             {activePanel === 'filter' && (
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
@@ -597,13 +627,29 @@ export default function RecordView({ onBack, onDone }) {
             )}
           </AnimatePresence>
 
+          {/* "Heute gespeichert" badge — shows when IDB clips are loaded */}
+          <AnimatePresence>
+            {clips.length > 0 && !isRecording && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
+                className="flex justify-center mb-2">
+                <div className="flex items-center gap-1.5 px-3 py-1 rounded-full"
+                  style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)' }}>
+                  <span className="text-[10px] text-white/50 font-medium">
+                    Heute: {clips.length} Clip{clips.length !== 1 ? 's' : ''} · {formatDur(totalSec)} aufgenommen
+                  </span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Clip strip */}
           <AnimatePresence>
             {clips.length > 0 && (
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
                 className="flex gap-2 px-4 mb-5 overflow-x-auto no-scrollbar">
                 {clips.map((clip, i) => (
-                  <motion.div key={i} initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+                  <motion.div key={clip.key ?? i} initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
                     className="flex-shrink-0 relative group" style={{ width: 42, height: 60 }}>
                     <div className="w-full h-full rounded-xl overflow-hidden"
                       style={{ border: '2px solid rgba(255,255,255,0.35)' }}>
@@ -636,7 +682,6 @@ export default function RecordView({ onBack, onDone }) {
                   backdropFilter: 'blur(12px)',
                   border: '1.5px solid rgba(255,255,255,0.2)',
                 }}>
-                {/* Color swatch of current filter */}
                 {filterIdx > 0 && (
                   <div className="absolute inset-0 opacity-40"
                     style={{ background: `hue-rotate(${filterIdx * 36}deg) saturate(2)` }} />
@@ -655,8 +700,8 @@ export default function RecordView({ onBack, onDone }) {
               </motion.button>
             </div>
 
-            {/* Record button with Snap-style drag-to-zoom */}
-            <SnapRecordBtn
+            {/* Record button — tap to toggle, drag up to zoom */}
+            <TapRecordBtn
               isRecording={isRecording}
               disabled={permission !== 'granted' || totalSec >= MAX_SEC}
               progress={progress}
@@ -665,7 +710,7 @@ export default function RecordView({ onBack, onDone }) {
               onStop={stopRecording}
               onZoom={setZoom} />
 
-            {/* Right: done */}
+            {/* Right: zusammenfügen */}
             <div className="w-24 flex justify-end">
               <AnimatePresence>
                 {clips.length > 0 && (
@@ -687,11 +732,11 @@ export default function RecordView({ onBack, onDone }) {
 
           {/* Hint */}
           <p className="text-center text-white/40 text-[11px] mt-4 px-4">
-            {pendingEmoji ? 'Tippe auf das Bild zum Platzieren'
+            {pendingEmoji     ? 'Tippe auf das Bild zum Platzieren'
               : totalSec >= MAX_SEC ? '60 Sekunden erreicht'
-              : isRecording ? 'Nach oben ziehen zum Zoomen · Loslassen zum Stoppen'
-              : clips.length === 0 ? 'Halten zum Aufnehmen · Nach oben ziehen zum Zoomen'
-              : 'Halten für weiteren Clip · Fertig zum Speichern'}
+              : isRecording        ? 'Ziehen zum Zoomen · Nochmal tippen zum Stoppen'
+              : clips.length === 0 ? 'Tippen zum Aufnehmen · Ziehen zum Zoomen'
+              : 'Tippen für weiteren Clip · Fertig zum Zusammenfügen'}
           </p>
         </div>
       </motion.div>
@@ -710,83 +755,103 @@ function GlassBtn({ children, onClick, disabled }) {
   )
 }
 
-// ── Snapchat-style record button ───────────────────────────────────────────────
-function SnapRecordBtn({ isRecording, disabled, progress, zoom, onStart, onStop, onZoom }) {
-  const R        = 40
-  const CIRC     = 2 * Math.PI * R
-  const startY   = useRef(null)
-  const startZ   = useRef(1)
-  const btnRef   = useRef(null)
+// ── Tap-to-toggle record button with drag-to-zoom ──────────────────────────────
+function TapRecordBtn({ isRecording, disabled, progress, zoom, onStart, onStop, onZoom }) {
+  const R    = 44
+  const CIRC = 2 * Math.PI * R
 
-  const handlePointerDown = e => {
+  const downRef = useRef(null)   // { y, z } at pointer-down
+  const didDrag = useRef(false)
+  const btnRef  = useRef(null)
+
+  const onDown = e => {
     if (disabled) return
     e.preventDefault()
-    startY.current = e.clientY
-    startZ.current = zoom
+    downRef.current  = { y: e.clientY, z: zoom }
+    didDrag.current  = false
     btnRef.current?.setPointerCapture(e.pointerId)
-    onStart()
   }
 
-  const handlePointerMove = e => {
-    if (startY.current == null) return
-    const dy   = startY.current - e.clientY  // drag up = positive
-    const dz   = (dy / 180) * 3              // 180px drag = 3× change
-    const newZ = Math.min(4, Math.max(1, startZ.current + dz))
+  const onMove = e => {
+    if (!downRef.current) return
+    const dy = downRef.current.y - e.clientY
+    if (Math.abs(dy) > 8) didDrag.current = true
+    const newZ = Math.min(4, Math.max(1, downRef.current.z + (dy / 180) * 3))
     onZoom(parseFloat(newZ.toFixed(2)))
   }
 
-  const handlePointerUp = e => {
+  const onUp = e => {
     e.preventDefault()
-    startY.current = null
-    onStop()
+    if (!downRef.current) return
+    downRef.current = null
+    if (!didDrag.current) {
+      // Pure tap → toggle recording
+      if (isRecording) onStop()
+      else onStart()
+    }
+  }
+
+  const onCancel = () => {
+    downRef.current = null
+    didDrag.current = false
   }
 
   return (
-    <div className="relative flex items-center justify-center" style={{ width: 108, height: 108 }}>
+    <div className="relative flex items-center justify-center" style={{ width: 112, height: 112 }}>
       {/* Progress ring */}
-      <svg className="absolute inset-0 -rotate-90" width="108" height="108">
-        <circle cx="54" cy="54" r={R} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="3.5" />
-        <motion.circle cx="54" cy="54" r={R} fill="none" stroke="white" strokeWidth="3.5"
-          strokeLinecap="round" strokeDasharray={CIRC}
+      <svg className="absolute inset-0 -rotate-90" width="112" height="112">
+        <circle cx="56" cy="56" r={R} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="4.5" />
+        <motion.circle cx="56" cy="56" r={R} fill="none"
+          stroke={isRecording ? '#FF3B30' : 'rgba(255,255,255,0.9)'}
+          strokeWidth="4.5" strokeLinecap="round"
+          strokeDasharray={CIRC}
           animate={{ strokeDashoffset: CIRC - (progress / 100) * CIRC }}
-          transition={{ duration: 0.1 }} />
+          transition={{ duration: 0.15 }} />
       </svg>
 
-      {/* Pulse */}
+      {/* Pulse when recording */}
       {isRecording && (
-        <motion.div className="absolute w-24 h-24 rounded-full"
-          style={{ background: 'rgba(239,68,68,0.2)' }}
-          animate={{ scale: [1, 1.4, 1], opacity: [0.8, 0, 0.8] }}
-          transition={{ duration: 1, repeat: Infinity }} />
+        <motion.div className="absolute rounded-full pointer-events-none"
+          style={{ width: 100, height: 100, background: 'rgba(255,59,48,0.18)' }}
+          animate={{ scale: [1, 1.14, 1], opacity: [0.9, 0.3, 0.9] }}
+          transition={{ duration: 1.1, repeat: Infinity }} />
       )}
 
-      {/* Button */}
+      {/* Main button */}
       <motion.button
         ref={btnRef}
         animate={{ scale: isRecording ? 0.88 : 1 }}
-        transition={{ duration: 0.15 }}
+        transition={{ duration: 0.18, type: 'spring', stiffness: 260, damping: 20 }}
         disabled={disabled}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onCancel}
         onContextMenu={e => e.preventDefault()}
-        className="relative w-[74px] h-[74px] rounded-full flex items-center justify-center disabled:opacity-40"
+        className="relative disabled:opacity-40"
         style={{
+          width: 82, height: 82,
+          borderRadius: '50%',
+          background: isRecording ? '#FF3B30' : 'white',
+          boxShadow: isRecording
+            ? '0 0 0 5px rgba(255,59,48,0.22), 0 0 32px rgba(255,59,48,0.5)'
+            : '0 0 0 5px rgba(255,255,255,0.14), 0 4px 24px rgba(0,0,0,0.5)',
           touchAction: 'none',
           WebkitUserSelect: 'none',
           userSelect: 'none',
-          background: isRecording
-            ? '#EF4444'
-            : 'linear-gradient(135deg, #7B61FF, #00D9FF)',
-          boxShadow: isRecording
-            ? '0 0 36px rgba(239,68,68,0.6)'
-            : '0 0 36px rgba(123,97,255,0.6)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
         }}>
+        {/* Inner shape: invisible circle when idle, white square when recording */}
         <motion.div
-          animate={{ width: isRecording ? 26 : 30, height: isRecording ? 26 : 30, borderRadius: isRecording ? 6 : 15 }}
-          transition={{ duration: 0.15 }}
-          className="bg-white" />
+          animate={{
+            width:        isRecording ? 30 : 0,
+            height:       isRecording ? 30 : 0,
+            borderRadius: isRecording ? 8 : 0,
+          }}
+          transition={{ duration: 0.18 }}
+          style={{ background: 'white', flexShrink: 0 }} />
       </motion.button>
     </div>
   )
