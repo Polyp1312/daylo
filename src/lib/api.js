@@ -12,7 +12,6 @@ async function req(method, path, body) {
   return res.json()
 }
 
-// XHR upload so we get real upload progress events
 function xhrUpload(path, formData, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -33,12 +32,25 @@ function xhrUpload(path, formData, onProgress) {
   })
 }
 
+function xhrSend(path, formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.onload  = () => { try { const d = JSON.parse(xhr.responseText); d.error ? reject(new Error(d.error)) : resolve(d) } catch { reject(new Error('Fehler')) } }
+    xhr.onerror = () => reject(new Error('Netzwerkfehler'))
+    xhr.open('POST', path)
+    const token = getToken()
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.send(formData)
+  })
+}
+
 export const api = {
   register:       (email, password, username) => req('POST',   '/api/auth/register',      { email, password, username }),
   verify:         (email, code)               => req('POST',   '/api/auth/verify',        { email, code }),
   login:          (email, password)           => req('POST',   '/api/auth/login',         { email, password }),
   me:             ()                          => req('GET',    '/api/auth/me'),
   updateUsername: (username)                  => req('PUT',    '/api/auth/username',      { username }),
+  uploadAvatar:   (formData)                  => xhrSend('/api/auth/avatar', formData),
   search:         (q)                         => req('GET',    `/api/users/search?q=${encodeURIComponent(q)}`),
   friends: {
     list:     ()             => req('GET',    '/api/friends'),
@@ -63,7 +75,27 @@ export const api = {
     myList:   ()         => req('GET',    '/api/vlogs/my'),
     userList: (userId)   => req('GET',    `/api/vlogs/user/${userId}`),
     delete:   (id)       => req('DELETE', `/api/vlogs/${id}`),
-    react:    (id, type) => req('POST',   `/api/vlogs/${id}/react`, { type }),
+    react:    (id, type) => req('POST',   `/api/vlogs/${id}/react`,    { type }),
+    comments: (id)       => req('GET',    `/api/vlogs/${id}/comments`),
+    addComment:(id,text) => req('POST',   `/api/vlogs/${id}/comments`, { text }),
+    reactors: (id)       => req('GET',    `/api/vlogs/${id}/reactors`),
+  },
+  comments: {
+    delete: (commentId) => req('DELETE', `/api/comments/${commentId}`),
+  },
+  groups: {
+    list:         ()               => req('GET',    '/api/groups'),
+    create:       (name, emoji)    => req('POST',   '/api/groups',                    { name, emoji }),
+    update:       (id, body)       => req('PUT',    `/api/groups/${id}`,              body),
+    delete:       (id)             => req('DELETE', `/api/groups/${id}`),
+    addMember:    (groupId, userId)=> req('POST',   `/api/groups/${groupId}/members`, { userId }),
+    removeMember: (groupId, userId)=> req('DELETE', `/api/groups/${groupId}/members/${userId}`),
+  },
+  messages: {
+    unreadCount:   ()             => req('GET',  '/api/messages/unread-count'),
+    conversations: ()             => req('GET',  '/api/messages'),
+    conversation:  (friendId)     => req('GET',  `/api/messages/${friendId}`),
+    send:          (friendId, text)=> req('POST', `/api/messages/${friendId}`, { text }),
   },
   push: {
     vapidKey:    ()    => req('GET',    '/api/push/vapid-key'),

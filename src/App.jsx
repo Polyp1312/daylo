@@ -1,10 +1,10 @@
-// v4
-import { useState, useEffect } from 'react'
+// v5 — comments, delete vlog, reaction owners, DMs tab
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Bell, Video, Users, Home, Play, User,
+  Bell, Video, Users, Home, Play, User, MessageCircle,
   Clock, Zap, Sparkles, Camera, QrCode, X, Plus,
-  Check, CheckCircle, UserPlus, ChevronLeft,
+  Check, CheckCircle, UserPlus, ChevronLeft, Trash2, Send,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 
@@ -12,6 +12,7 @@ import ProgressRing   from './components/ProgressRing'
 import RecordView     from './views/RecordView'
 import GroupView      from './views/GroupView'
 import ProfileView    from './views/ProfileView'
+import MessagesView   from './views/MessagesView'
 import { useApp }     from './context/AppContext'
 import { useAuth }    from './context/AuthContext'
 import { api }        from './lib/api'
@@ -156,13 +157,14 @@ function NotificationsPanel({ onClose }) {
 
 // ── Nav tabs ──────────────────────────────────────────────────────────────────
 const TABS = [
-  { id: 'home',    icon: Home,   label: 'Home',      view: 'dashboard' },
-  { id: 'record',  icon: Camera, label: 'Aufnehmen', view: 'record',   special: true },
-  { id: 'group',   icon: Users,  label: 'Gruppe',    view: 'group'     },
-  { id: 'profile', icon: User,   label: 'Profil',    view: 'profile'   },
+  { id: 'home',     icon: Home,          label: 'Home',      view: 'dashboard' },
+  { id: 'record',   icon: Camera,        label: 'Aufnehmen', view: 'record',   special: true },
+  { id: 'messages', icon: MessageCircle, label: 'Chats',     view: 'messages'  },
+  { id: 'profile',  icon: User,          label: 'Profil',    view: 'profile'   },
 ]
 
 function BottomNav({ activeTab, onNavigate }) {
+  const { unreadMessages } = useApp()
   return (
     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[390px] bg-[#0A0A0B]/90 backdrop-blur-xl border-t border-[#2C2C2E] px-6 pt-3 pb-8 z-50">
       <div className="flex items-end justify-around">
@@ -177,9 +179,16 @@ function BottomNav({ activeTab, onNavigate }) {
               </div>
             ) : (
               <>
-                <motion.div animate={{ color: activeTab === tab.id ? '#7B61FF' : '#3A3A3C' }}>
-                  <tab.icon size={22} />
-                </motion.div>
+                <div className="relative">
+                  <motion.div animate={{ color: activeTab === tab.id ? '#7B61FF' : '#3A3A3C' }}>
+                    <tab.icon size={22} />
+                  </motion.div>
+                  {tab.id === 'messages' && unreadMessages > 0 && (
+                    <div className="absolute -top-1 -right-1.5 w-4 h-4 rounded-full bg-[#7B61FF] flex items-center justify-center">
+                      <span className="text-[8px] text-white font-bold">{Math.min(unreadMessages, 9)}</span>
+                    </div>
+                  )}
+                </div>
                 <span className="text-[10px] transition-colors" style={{ color: activeTab === tab.id ? '#7B61FF' : '#3A3A3C' }}>
                   {tab.label}
                 </span>
@@ -437,31 +446,68 @@ const REACTION_TYPES = ['👍', '❤️', '😂']
 
 // ── Reveal View ───────────────────────────────────────────────────────────────
 function RevealView({ onBack, targetUserId }) {
-  const { user }    = useAuth()
-  const { myVlogs } = useApp()
+  const { user }              = useAuth()
+  const { myVlogs, deleteVlog } = useApp()
   const [vlogs,     setVlogs]     = useState(null)
   const [selected,  setSelected]  = useState(null)
-  const [rxMap,     setRxMap]     = useState({})   // vlogId → reactions[]
+  const [rxMap,     setRxMap]     = useState({})
+  const [comments,  setComments]  = useState({})   // vlogId → comment[]
+  const [reactors,  setReactors]  = useState({})   // vlogId → {type: [{name}]}
+  const [commentText, setCommentText] = useState('')
+  const [sendingComment, setSending]  = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const commentInputRef = useRef(null)
 
   const isMe = !targetUserId || targetUserId === user?.id
 
   useEffect(() => {
-    if (isMe) {
-      setVlogs(myVlogs)
-    } else {
-      api.vlogs.userList(targetUserId)
-        .then(d => setVlogs(d.vlogs ?? []))
-        .catch(() => setVlogs([]))
-    }
+    if (isMe) setVlogs(myVlogs)
+    else api.vlogs.userList(targetUserId).then(d => setVlogs(d.vlogs ?? [])).catch(() => setVlogs([]))
   }, [isMe, targetUserId, myVlogs])
 
-  const selectedVlog = vlogs?.find(v => v.id === selected)
+  // Load comments + reactors when a vlog is selected
+  useEffect(() => {
+    if (!selected) return
+    if (!comments[selected]) {
+      api.vlogs.comments(selected).then(d => {
+        if (d.comments) setComments(p => ({ ...p, [selected]: d.comments }))
+      })
+    }
+    if (isMe && !reactors[selected]) {
+      api.vlogs.reactors(selected).then(d => {
+        if (d.reactors) setReactors(p => ({ ...p, [selected]: d.reactors }))
+      })
+    }
+  }, [selected, isMe])
 
+  const selectedVlog = vlogs?.find(v => v.id === selected)
   const getReactions = vlog => rxMap[vlog.id] ?? vlog.reactions ?? []
+  const vlogComments = selected ? (comments[selected] ?? []) : []
+  const vlogReactors = selected ? (reactors[selected] ?? {}) : {}
 
   const handleReact = async (vlogId, type) => {
     const data = await api.vlogs.react(vlogId, type)
     if (data.reactions) setRxMap(p => ({ ...p, [vlogId]: data.reactions }))
+  }
+
+  const handleSendComment = async () => {
+    const t = commentText.trim()
+    if (!t || sendingComment || !selected) return
+    setSending(true); setCommentText('')
+    const { comment } = await api.vlogs.addComment(selected, t).catch(() => ({}))
+    if (comment) setComments(p => ({ ...p, [selected]: [...(p[selected] ?? []), comment] }))
+    setSending(false)
+  }
+
+  const handleDeleteComment = async (commentId) => {
+    await api.comments.delete(commentId)
+    setComments(p => ({ ...p, [selected]: (p[selected] ?? []).filter(c => c.id !== commentId) }))
+  }
+
+  const handleDeleteVlog = async (vlogId) => {
+    await deleteVlog(vlogId)
+    setSelected(null)
+    setConfirmDelete(null)
   }
 
   return (
@@ -471,9 +517,7 @@ function RevealView({ onBack, targetUserId }) {
           className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center">
           <ChevronLeft size={18} className="text-white" />
         </motion.button>
-        <span className="text-white font-semibold">
-          {isMe ? 'Meine Vlogs' : 'Vlogs ansehen'}
-        </span>
+        <span className="text-white font-semibold">{isMe ? 'Meine Vlogs' : 'Vlogs ansehen'}</span>
         <div className="w-10" />
       </div>
 
@@ -481,38 +525,110 @@ function RevealView({ onBack, targetUserId }) {
       {selectedVlog && (
         <div className="mx-5 mb-3">
           <div className="rounded-3xl overflow-hidden bg-[#141415] border border-[#2C2C2E]"
-            style={{ aspectRatio: '9/16', maxHeight: '55vh' }}>
-            <video
-              key={selectedVlog.url}
-              src={selectedVlog.url}
-              controls autoPlay playsInline
-              className="w-full h-full object-cover" />
+            style={{ aspectRatio: '9/16', maxHeight: '52vh' }}>
+            <video key={selectedVlog.url} src={selectedVlog.url}
+              controls autoPlay playsInline className="w-full h-full object-cover" />
           </div>
 
-          {/* Vlog title */}
-          {selectedVlog.title && (
-            <p className="text-white font-semibold text-base mt-3 px-1">{selectedVlog.title}</p>
-          )}
+          {selectedVlog.title && <p className="text-white font-semibold text-base mt-3 px-1">{selectedVlog.title}</p>}
 
           {/* Reactions */}
-          <div className="flex gap-2 mt-3 px-1">
+          <div className="flex items-center gap-2 mt-3 px-1">
             {REACTION_TYPES.map(type => {
-              const rx = getReactions(selectedVlog).find(r => r.type === type)
+              const rx    = getReactions(selectedVlog).find(r => r.type === type)
               const count = rx?.count ?? 0
               const mine  = rx?.mine  ?? false
               return (
                 <motion.button key={type} whileTap={{ scale: 0.85 }}
                   onClick={() => handleReact(selectedVlog.id, type)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold transition-colors"
-                  style={{
-                    background: mine ? 'rgba(123,97,255,0.2)' : 'rgba(44,44,46,1)',
-                    border: `1.5px solid ${mine ? 'rgba(123,97,255,0.5)' : 'transparent'}`,
-                  }}>
+                  style={{ background: mine ? 'rgba(123,97,255,0.2)' : 'rgba(44,44,46,1)', border: `1.5px solid ${mine ? 'rgba(123,97,255,0.5)' : 'transparent'}` }}>
                   <span>{type}</span>
                   {count > 0 && <span className="text-xs" style={{ color: mine ? '#7B61FF' : '#8E8E93' }}>{count}</span>}
                 </motion.button>
               )
             })}
+            {/* Delete button for own vlogs */}
+            {isMe && (
+              <motion.button whileTap={{ scale: 0.85 }} onClick={() => setConfirmDelete(selectedVlog.id)}
+                className="ml-auto w-8 h-8 rounded-full bg-red-500/15 flex items-center justify-center">
+                <Trash2 size={14} className="text-red-400" />
+              </motion.button>
+            )}
+          </div>
+
+          {/* Reaction owners — visible to vlog owner */}
+          {isMe && Object.keys(vlogReactors).length > 0 && (
+            <div className="mt-3 px-1 space-y-1">
+              {Object.entries(vlogReactors).map(([type, users]) => (
+                <p key={type} className="text-xs text-[#8E8E93]">
+                  {type} {users.map(u => u.name).join(', ')}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {/* Delete confirm */}
+          <AnimatePresence>
+            {confirmDelete === selectedVlog.id && (
+              <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="mt-3 rounded-2xl bg-red-500/10 border border-red-500/30 p-4">
+                <p className="text-white text-sm font-semibold mb-3">Vlog wirklich löschen?</p>
+                <div className="flex gap-2">
+                  <motion.button whileTap={{ scale: 0.96 }} onClick={() => handleDeleteVlog(selectedVlog.id)}
+                    className="flex-1 py-2 rounded-xl bg-red-500 text-white font-semibold text-sm">Löschen</motion.button>
+                  <motion.button whileTap={{ scale: 0.96 }} onClick={() => setConfirmDelete(null)}
+                    className="flex-1 py-2 rounded-xl bg-[#2C2C2E] text-white font-semibold text-sm">Abbrechen</motion.button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Comments */}
+          <div className="mt-4 px-1">
+            <p className="text-xs text-[#8E8E93] font-semibold uppercase tracking-wider mb-3">
+              Kommentare {vlogComments.length > 0 ? `· ${vlogComments.length}` : ''}
+            </p>
+            <div className="space-y-2.5 mb-3">
+              {vlogComments.map(c => (
+                <div key={c.id} className="flex items-start gap-2.5">
+                  <div className="w-7 h-7 rounded-full bg-[#7B61FF]/20 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                    {(c.username ?? '?').slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="flex-1 bg-[#1C1C1E] rounded-2xl rounded-tl-md px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-[#7B61FF] font-semibold">{c.username}</span>
+                      {c.user_id === user?.id && (
+                        <motion.button whileTap={{ scale: 0.85 }} onClick={() => handleDeleteComment(c.id)}>
+                          <X size={11} className="text-[#8E8E93]" />
+                        </motion.button>
+                      )}
+                    </div>
+                    <p className="text-white text-sm mt-0.5 leading-relaxed">{c.text}</p>
+                  </div>
+                </div>
+              ))}
+              {vlogComments.length === 0 && (
+                <p className="text-[#3A3A3C] text-xs text-center py-2">Noch keine Kommentare</p>
+              )}
+            </div>
+
+            {/* Comment input */}
+            <div className="flex items-center gap-2">
+              <div className="flex-1 bg-[#1C1C1E] border border-[#2C2C2E] rounded-2xl px-3 py-2.5 focus-within:border-[#7B61FF] transition-colors">
+                <input ref={commentInputRef} value={commentText}
+                  onChange={e => setCommentText(e.target.value.slice(0, 500))}
+                  onKeyDown={e => e.key === 'Enter' && handleSendComment()}
+                  placeholder="Kommentar schreiben…"
+                  className="w-full bg-transparent text-white placeholder-[#3A3A3C] text-sm outline-none" />
+              </div>
+              <motion.button whileTap={{ scale: 0.88 }} onClick={handleSendComment}
+                disabled={!commentText.trim() || sendingComment}
+                className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 disabled:opacity-40"
+                style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
+                <Send size={15} className="text-white" style={{ transform: 'translateX(1px)' }} />
+              </motion.button>
+            </div>
           </div>
         </div>
       )}
@@ -524,7 +640,7 @@ function RevealView({ onBack, targetUserId }) {
         </div>
       )}
 
-      {/* Empty state */}
+      {/* Empty */}
       {vlogs !== null && vlogs.length === 0 && (
         <div className="mx-5 rounded-3xl bg-[#141415] border border-[#2C2C2E] p-12 flex flex-col items-center gap-3">
           <span className="text-5xl">🎬</span>
@@ -541,28 +657,21 @@ function RevealView({ onBack, targetUserId }) {
               initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
               whileTap={{ scale: 0.97 }}
-              onClick={() => setSelected(v.id)}
+              onClick={() => { setSelected(v.id); setCommentText('') }}
               className={`flex items-center gap-3 rounded-2xl p-3.5 cursor-pointer border transition-colors ${
-                selected === v.id
-                  ? 'bg-[#7B61FF]/10 border-[#7B61FF]/30'
-                  : 'bg-[#141415] border-[#2C2C2E]'
+                selected === v.id ? 'bg-[#7B61FF]/10 border-[#7B61FF]/30' : 'bg-[#141415] border-[#2C2C2E]'
               }`}>
-              {/* Thumbnail or emoji fallback */}
-              <div className="w-12 h-18 rounded-xl overflow-hidden flex-shrink-0"
-                style={{ width: 48, height: 64, background: '#7B61FF15', flexShrink: 0 }}>
+              <div style={{ width: 48, height: 64, background: '#7B61FF15', flexShrink: 0 }}
+                className="rounded-xl overflow-hidden">
                 {v.thumbnail
                   ? <img src={v.thumbnail} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center text-2xl">{v.emoji}</div>
-                }
+                  : <div className="w-full h-full flex items-center justify-center text-2xl">{v.emoji}</div>}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-white font-semibold text-sm truncate">{v.title ?? v.date}</p>
                 <p className="text-xs text-[#8E8E93] mt-0.5">{v.date} · {v.clipCount} Clips · {Math.round(v.duration)}s</p>
-                {/* Mini reaction summary */}
-                {(v.reactions?.length > 0) && (
-                  <p className="text-xs text-[#8E8E93] mt-0.5">
-                    {v.reactions.map(r => `${r.type} ${r.count}`).join('  ')}
-                  </p>
+                {v.reactions?.length > 0 && (
+                  <p className="text-xs text-[#8E8E93] mt-0.5">{v.reactions.map(r => `${r.type} ${r.count}`).join('  ')}</p>
                 )}
               </div>
               <div className="w-8 h-8 rounded-full bg-[#7B61FF]/20 flex items-center justify-center flex-shrink-0">
@@ -628,8 +737,9 @@ export default function App() {
               onBack={() => setView('dashboard')}
               targetUserId={revealTarget} />
           )}
-          {view === 'group'   && <GroupView   key="group"   />}
-          {view === 'profile' && <ProfileView key="profile" />}
+          {view === 'messages' && <MessagesView key="messages" />}
+          {view === 'group'    && <GroupView    key="group"    />}
+          {view === 'profile'  && <ProfileView  key="profile"  />}
         </AnimatePresence>
 
         {showNav && <BottomNav activeTab={activeTab} onNavigate={navigate} />}

@@ -96,10 +96,10 @@ function CreateGroup({ onBack, onCreated }) {
   const [name, setName] = useState('')
   const [emoji, setEmoji] = useState('🎬')
 
-  const submit = () => {
+  const submit = async () => {
     if (!name.trim()) return
-    const id = createGroup(name.trim(), emoji)
-    onCreated(id)
+    const id = await createGroup(name.trim(), emoji)
+    if (id) onCreated(id)
   }
 
   return (
@@ -170,8 +170,8 @@ function GroupDetail({ groupId, onBack, onAddMember }) {
 
   const todayUserId = group.rotation[group.todayIdx] ?? group.memberIds[0]
 
-  const saveEdit = () => {
-    if (editName.trim()) renameGroup(groupId, editName.trim())
+  const saveEdit = async () => {
+    if (editName.trim()) await renameGroup(groupId, editName.trim())
     setEditing(false)
   }
 
@@ -251,7 +251,7 @@ function GroupDetail({ groupId, onBack, onAddMember }) {
                     confirmRemove === uid ? (
                       <div className="flex items-center gap-2">
                         <motion.button whileTap={{ scale: 0.88 }}
-                          onClick={() => { removeMember(groupId, uid); setConfirmRemove(null) }}
+                          onClick={async () => { await removeMember(groupId, uid); setConfirmRemove(null) }}
                           className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center">
                           <Check size={13} className="text-red-400" />
                         </motion.button>
@@ -301,7 +301,7 @@ function GroupDetail({ groupId, onBack, onAddMember }) {
             <p className="text-white font-semibold text-sm mb-1">Gruppe wirklich löschen?</p>
             <p className="text-[#8E8E93] text-xs mb-3">Diese Aktion kann nicht rückgängig gemacht werden.</p>
             <div className="flex gap-2">
-              <motion.button whileTap={{ scale: 0.96 }} onClick={() => { deleteGroup(groupId); onBack() }}
+              <motion.button whileTap={{ scale: 0.96 }} onClick={async () => { await deleteGroup(groupId); onBack() }}
                 className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-semibold text-sm">
                 Löschen
               </motion.button>
@@ -337,8 +337,8 @@ function AddMember({ groupId, onBack }) {
     f.name.toLowerCase().includes(query.toLowerCase())
   )
 
-  const handleAdd = u => {
-    addMember(groupId, u)
+  const handleAdd = async u => {
+    await addMember(groupId, u)
     setAdded(p => [...p, u.id])
   }
 

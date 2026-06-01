@@ -1,9 +1,9 @@
 // v6
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Settings, CheckCircle, LogOut, UserPlus, Trash2, Check, X,
-  ChevronLeft, Search, AtSign, Save,
+  ChevronLeft, Search, AtSign, Save, Camera,
 } from 'lucide-react'
 import { useApp, formatUser } from '../context/AppContext'
 import { useAuth } from '../context/AuthContext'
@@ -26,10 +26,13 @@ function Avatar({ user, size = 10 }) {
 // ── Settings screen ───────────────────────────────────────────────────────────
 function SettingsScreen({ onBack }) {
   const { user, updateUser, signOut } = useAuth()
-  const [username, setUsername] = useState(user?.username ?? '')
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState('')
-  const [saved,    setSaved]    = useState(false)
+  const [username,    setUsername]    = useState(user?.username ?? '')
+  const [loading,     setLoading]     = useState(false)
+  const [error,       setError]       = useState('')
+  const [saved,       setSaved]       = useState(false)
+  const [avatar,      setAvatar]      = useState(user?.avatar ?? null)
+  const [avatarLoad,  setAvatarLoad]  = useState(false)
+  const fileRef = useRef(null)
 
   const saveUsername = async () => {
     if (!username.trim() || username === user?.username) return
@@ -40,6 +43,19 @@ function SettingsScreen({ onBack }) {
     updateUser(data.user, data.token)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+  }
+
+  const handleAvatarChange = async e => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setAvatarLoad(true)
+    const formData = new FormData()
+    formData.append('avatar', file)
+    try {
+      const { avatar: url } = await api.uploadAvatar(formData)
+      if (url) setAvatar(url + '?t=' + Date.now())
+    } catch {}
+    setAvatarLoad(false)
   }
 
   return (
@@ -53,6 +69,33 @@ function SettingsScreen({ onBack }) {
       </div>
 
       <div className="px-5 space-y-4">
+        {/* Avatar upload */}
+        <div className="bg-[#141415] border border-[#2C2C2E] rounded-2xl p-4">
+          <p className="text-xs text-[#8E8E93] font-semibold uppercase tracking-wider mb-3">Profilbild</p>
+          <div className="flex items-center gap-4">
+            <div className="relative w-16 h-16 flex-shrink-0">
+              {avatar
+                ? <img src={avatar} alt="" className="w-16 h-16 rounded-full object-cover" />
+                : <div className="w-16 h-16 rounded-full flex items-center justify-center text-white font-bold text-xl"
+                    style={{ background: `linear-gradient(135deg, #7B61FF, #00D9FF)` }}>
+                    {(user?.username ?? '?').slice(0, 2).toUpperCase()}
+                  </div>
+              }
+              {avatarLoad && (
+                <div className="absolute inset-0 rounded-full bg-black/60 flex items-center justify-center">
+                  <div className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                </div>
+              )}
+            </div>
+            <motion.button whileTap={{ scale: 0.96 }} onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#2C2C2E] text-white text-sm font-medium">
+              <Camera size={15} className="text-[#8E8E93]" />
+              Bild ändern
+            </motion.button>
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
+          </div>
+        </div>
+
         {/* Username change */}
         <div className="bg-[#141415] border border-[#2C2C2E] rounded-2xl p-4">
           <p className="text-xs text-[#8E8E93] font-semibold uppercase tracking-wider mb-3">Nutzername</p>
@@ -256,10 +299,13 @@ function ProfileMain({ onAddFriend, onSettings }) {
       <div className="mx-5 mb-5 rounded-3xl bg-[#141415] border border-[#2C2C2E] p-6 flex flex-col items-center relative overflow-hidden">
         <div className="absolute -top-10 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full pointer-events-none"
           style={{ background: `radial-gradient(circle, ${me?.color ?? '#7B61FF'}20 0%, transparent 70%)` }} />
-        <div className="w-20 h-20 rounded-full flex items-center justify-center text-white font-bold text-2xl mb-3"
-          style={{ background: `linear-gradient(135deg, ${me?.color ?? '#7B61FF'}, #1aab5a)` }}>
-          {initials}
-        </div>
+        {user?.avatar
+          ? <img src={user.avatar} alt="" className="w-20 h-20 rounded-full object-cover mb-3" />
+          : <div className="w-20 h-20 rounded-full flex items-center justify-center text-white font-bold text-2xl mb-3"
+              style={{ background: `linear-gradient(135deg, ${me?.color ?? '#7B61FF'}, #1aab5a)` }}>
+              {initials}
+            </div>
+        }
         <h2 className="text-white font-bold text-xl">{displayName}</h2>
         <p className="text-[#8E8E93] text-sm mt-0.5">{displayEmail}</p>
         <div className="flex gap-5 mt-5 pt-4 border-t border-[#2C2C2E] w-full justify-around">

@@ -131,4 +131,46 @@ if (fs.existsSync(OLD)) {
   }
 }
 
+// ── New feature tables ─────────────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS comments (
+    id         TEXT PRIMARY KEY,
+    vlog_id    TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_vlog ON comments(vlog_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS user_groups (
+    id                 TEXT PRIMARY KEY,
+    name               TEXT NOT NULL,
+    emoji              TEXT DEFAULT '👥',
+    creator_id         TEXT NOT NULL,
+    rotation_order     TEXT DEFAULT '[]',
+    rotation_idx       INTEGER DEFAULT 0,
+    last_rotation_date TEXT DEFAULT '',
+    created_at         INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    user_id  TEXT NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id         TEXT PRIMARY KEY,
+    from_id    TEXT NOT NULL,
+    to_id      TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    read       INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(from_id, to_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_to   ON messages(to_id, read);
+`)
+try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT') } catch {}
+
 export default db

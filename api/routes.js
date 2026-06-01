@@ -115,6 +115,69 @@ function authUser(req) {
   try { return jwt.verify(auth.slice(7), JWT_SECRET) } catch { return null }
 }
 
+// ── Rate limiting (5 requests/min per IP for auth endpoints) ──────────────────
+const rateLimits = new Map()
+function rateLimit(req, res, next) {
+  const ip    = (req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown'
+  const now   = Date.now()
+  const entry = rateLimits.get(ip) ?? { count: 0, resetAt: now + 60_000 }
+  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60_000 }
+  entry.count++
+  rateLimits.set(ip, entry)
+  if (entry.count > 5) return res.status(429).json({ error: 'Zu viele Versuche. Bitte 1 Minute warten.' })
+  next()
+}
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, e] of rateLimits) if (now > e.resetAt + 10_000) rateLimits.delete(ip)
+}, 300_000)
+
+// ── Group helpers ─────────────────────────────────────────────────────────────
+function formatGroup(g) {
+  const members  = db.prepare(`SELECT u.id, u.username, u.avatar FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.group_id=?`).all(g.id)
+  const rotation = JSON.parse(g.rotation_order || '[]')
+  return { id: g.id, name: g.name, emoji: g.emoji, creatorId: g.creator_id, memberIds: members.map(m => m.id), members, rotation, todayIdx: g.rotation_idx, lastRotationDate: g.last_rotation_date }
+}
+function advanceGroupRotation(g) {
+  const today    = new Date().toISOString().slice(0, 10)
+  const rotation = JSON.parse(g.rotation_order || '[]')
+  if (g.last_rotation_date === today || !rotation.length) return
+  const newIdx = (g.rotation_idx + 1) % rotation.length
+  db.prepare('UPDATE user_groups SET rotation_idx=?, last_rotation_date=? WHERE id=?').run(newIdx, today, g.id)
+}
+
+// ── Evening reminder (18:00 UTC daily) ────────────────────────────────────────
+async function sendEveningReminder() {
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const users = db.prepare(`SELECT u.id FROM users u WHERE u.verified=1 AND u.id NOT IN (SELECT user_id FROM vlogs WHERE strftime('%Y-%m-%d', created_at/1000,'unixepoch')=?)`).all(today)
+    const payload = JSON.stringify({ title: 'daylo.', body: 'Du hast heute noch keinen Vlog aufgenommen! 🎬' })
+    for (const u of users) {
+      const subs = db.prepare('SELECT * FROM push_subscriptions WHERE user_id=?').all(u.id)
+      for (const sub of subs) {
+        webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload)
+          .catch(() => db.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').run(sub.endpoint))
+      }
+    }
+    console.log(`📅 Evening reminder → ${users.length} Nutzer`)
+  } catch (err) { console.error('Evening reminder error:', err.message) }
+}
+function scheduleEveningReminder() {
+  const now    = new Date()
+  const target = new Date(now); target.setUTCHours(18, 0, 0, 0)
+  if (target <= now) target.setUTCDate(target.getUTCDate() + 1)
+  setTimeout(() => { sendEveningReminder(); setInterval(sendEveningReminder, 24 * 60 * 60 * 1000) }, target - now)
+}
+
+// ── Avatar multer ─────────────────────────────────────────────────────────────
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => { const d = path.join(__dirname, '..', 'uploads', 'avatars'); fs.mkdirSync(d, { recursive: true }); cb(null, d) },
+    filename:    (_req, _file, cb) => cb(null, `${Date.now()}_av.jpg`),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+})
+
 
 function addNotification(userId, type, fromId, message) {
   db.prepare(`INSERT INTO notifications (id,user_id,type,from_id,message,read,created_at) VALUES (?,?,?,?,?,0,?)`)
@@ -207,7 +270,9 @@ export function registerRoutes(api) {
 
   // ── Auth ──────────────────────────────────────────────────────────────────────
 
-  api.post('/api/auth/register', async (req, res) => {
+  scheduleEveningReminder()
+
+  api.post('/api/auth/register', rateLimit, async (req, res) => {
     const { email, password, username } = req.body || {}
     if (!email || !password || !username)
       return res.json({ error: 'Alle Felder ausfüllen.' })
@@ -251,7 +316,7 @@ export function registerRoutes(api) {
     res.json({ success: true, token, user: safe })
   })
 
-  api.post('/api/auth/login', async (req, res) => {
+  api.post('/api/auth/login', rateLimit, async (req, res) => {
     const { email, password } = req.body || {}
     const u = db.prepare('SELECT * FROM users WHERE email=?').get(email?.toLowerCase())
     if (!u) return res.json({ error: 'Kein Konto mit dieser E-Mail gefunden.' })
@@ -270,6 +335,17 @@ export function registerRoutes(api) {
       const user = jwt.verify(auth.slice(7), JWT_SECRET)
       res.json({ user })
     } catch { res.json({ error: 'Session abgelaufen.' }) }
+  })
+
+  api.post('/api/auth/avatar', avatarUpload.single('avatar'), (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    if (!req.file) return res.json({ error: 'Keine Datei.' })
+    const finalName = `${me.id}.jpg`
+    const finalPath = path.join(__dirname, '..', 'uploads', 'avatars', finalName)
+    try { fs.renameSync(req.file.path, finalPath) } catch {}
+    db.prepare('UPDATE users SET avatar=? WHERE id=?').run(finalName, me.id)
+    res.json({ success: true, avatar: `/uploads/avatars/${finalName}` })
   })
 
   api.put('/api/auth/username', (req, res) => {
@@ -539,6 +615,195 @@ export function registerRoutes(api) {
     const { endpoint } = req.body || {}
     if (endpoint) db.prepare('DELETE FROM push_subscriptions WHERE user_id=? AND endpoint=?').run(me.id, endpoint)
     res.json({ success: true })
+  })
+
+  // ── Comments ──────────────────────────────────────────────────────────────────
+
+  api.get('/api/vlogs/:id/comments', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const comments = db.prepare(`
+      SELECT c.id, c.text, c.created_at, u.id as user_id, u.username, u.avatar
+      FROM comments c JOIN users u ON u.id=c.user_id
+      WHERE c.vlog_id=? ORDER BY c.created_at ASC
+    `).all(req.params.id)
+    res.json({ comments })
+  })
+
+  api.post('/api/vlogs/:id/comments', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const { text } = req.body || {}
+    if (!text?.trim()) return res.json({ error: 'Kein Text.' })
+    if (text.length > 500) return res.json({ error: 'Max. 500 Zeichen.' })
+    const id = crypto.randomUUID()
+    db.prepare('INSERT INTO comments (id,vlog_id,user_id,text,created_at) VALUES (?,?,?,?,?)')
+      .run(id, req.params.id, me.id, text.trim(), Date.now())
+    const c = db.prepare(`SELECT c.id,c.text,c.created_at,u.id as user_id,u.username,u.avatar FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?`).get(id)
+    res.json({ comment: c })
+  })
+
+  api.delete('/api/comments/:id', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    db.prepare('DELETE FROM comments WHERE id=? AND user_id=?').run(req.params.id, me.id)
+    res.json({ success: true })
+  })
+
+  // Who reacted to a vlog (for owner)
+  api.get('/api/vlogs/:id/reactors', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const rows = db.prepare(`SELECT r.type, u.id, u.username FROM reactions r JOIN users u ON u.id=r.user_id WHERE r.vlog_id=?`).all(req.params.id)
+    const byType = {}
+    for (const r of rows) {
+      if (!byType[r.type]) byType[r.type] = []
+      byType[r.type].push({ id: r.id, name: r.username })
+    }
+    res.json({ reactors: byType })
+  })
+
+  // ── Groups ────────────────────────────────────────────────────────────────────
+
+  api.get('/api/groups', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const rows = db.prepare(`SELECT g.* FROM user_groups g JOIN group_members gm ON gm.group_id=g.id WHERE gm.user_id=? ORDER BY g.created_at ASC`).all(me.id)
+    rows.forEach(g => advanceGroupRotation(g))
+    const updated = db.prepare(`SELECT g.* FROM user_groups g JOIN group_members gm ON gm.group_id=g.id WHERE gm.user_id=? ORDER BY g.created_at ASC`).all(me.id)
+    res.json({ groups: updated.map(formatGroup) })
+  })
+
+  api.post('/api/groups', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const { name, emoji } = req.body || {}
+    if (!name?.trim()) return res.json({ error: 'Kein Name.' })
+    const id    = crypto.randomUUID()
+    const today = new Date().toISOString().slice(0, 10)
+    db.transaction(() => {
+      db.prepare('INSERT INTO user_groups (id,name,emoji,creator_id,rotation_order,rotation_idx,last_rotation_date,created_at) VALUES (?,?,?,?,?,0,?,?)')
+        .run(id, name.trim(), emoji || '👥', me.id, JSON.stringify([me.id]), today, Date.now())
+      db.prepare('INSERT INTO group_members VALUES (?,?)').run(id, me.id)
+    })()
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=?').get(id)
+    res.json({ group: formatGroup(g) })
+  })
+
+  api.put('/api/groups/:id', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    if (!g) return res.json({ error: 'Nicht gefunden.' })
+    const isMember = db.prepare('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?').get(req.params.id, me.id)
+    if (!isMember) return res.json({ error: 'Kein Zugriff.' })
+    const { name, emoji, rotation, todayIdx, lastRotationDate } = req.body || {}
+    db.prepare('UPDATE user_groups SET name=?,emoji=?,rotation_order=?,rotation_idx=?,last_rotation_date=? WHERE id=?')
+      .run(name ?? g.name, emoji ?? g.emoji, rotation ? JSON.stringify(rotation) : g.rotation_order, todayIdx ?? g.rotation_idx, lastRotationDate ?? g.last_rotation_date, req.params.id)
+    const updated = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    res.json({ group: formatGroup(updated) })
+  })
+
+  api.delete('/api/groups/:id', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=? AND creator_id=?').get(req.params.id, me.id)
+    if (!g) return res.json({ error: 'Nicht gefunden oder kein Zugriff.' })
+    db.transaction(() => {
+      db.prepare('DELETE FROM group_members WHERE group_id=?').run(req.params.id)
+      db.prepare('DELETE FROM user_groups WHERE id=?').run(req.params.id)
+    })()
+    res.json({ success: true })
+  })
+
+  api.post('/api/groups/:id/members', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const { userId } = req.body || {}
+    if (!userId) return res.json({ error: 'Keine userId.' })
+    const isMember = db.prepare('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?').get(req.params.id, me.id)
+    if (!isMember) return res.json({ error: 'Kein Zugriff.' })
+    db.prepare('INSERT OR IGNORE INTO group_members VALUES (?,?)').run(req.params.id, userId)
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    const rotation = JSON.parse(g.rotation_order || '[]')
+    if (!rotation.includes(userId)) {
+      rotation.push(userId)
+      db.prepare('UPDATE user_groups SET rotation_order=? WHERE id=?').run(JSON.stringify(rotation), req.params.id)
+    }
+    const updated = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    res.json({ group: formatGroup(updated) })
+  })
+
+  api.delete('/api/groups/:id/members/:userId', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    if (!g) return res.json({ error: 'Nicht gefunden.' })
+    const isCreator = g.creator_id === me.id
+    if (!isCreator && req.params.userId !== me.id) return res.json({ error: 'Kein Zugriff.' })
+    db.prepare('DELETE FROM group_members WHERE group_id=? AND user_id=?').run(req.params.id, req.params.userId)
+    const rotation = JSON.parse(g.rotation_order || '[]').filter(id => id !== req.params.userId)
+    const newIdx   = Math.min(g.rotation_idx, Math.max(0, rotation.length - 1))
+    db.prepare('UPDATE user_groups SET rotation_order=?,rotation_idx=? WHERE id=?').run(JSON.stringify(rotation), newIdx, req.params.id)
+    const updated = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    res.json({ group: formatGroup(updated) })
+  })
+
+  // ── Direct Messages ───────────────────────────────────────────────────────────
+
+  api.get('/api/messages/unread-count', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const { count } = db.prepare('SELECT COUNT(*) as count FROM messages WHERE to_id=? AND read=0').get(me.id)
+    res.json({ count })
+  })
+
+  api.get('/api/messages', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    // Latest message per conversation partner
+    const rows = db.prepare(`
+      SELECT m.id, m.text, m.from_id, m.to_id, m.read, m.created_at,
+        CASE WHEN m.from_id=? THEN m.to_id ELSE m.from_id END as partner_id
+      FROM messages m
+      WHERE m.from_id=? OR m.to_id=?
+      GROUP BY partner_id HAVING m.created_at=MAX(m.created_at)
+      ORDER BY m.created_at DESC
+    `).all(me.id, me.id, me.id)
+    const convos = rows.map(r => {
+      const partner = db.prepare('SELECT id, username, avatar FROM users WHERE id=?').get(r.partner_id)
+      const unread  = db.prepare('SELECT COUNT(*) as c FROM messages WHERE from_id=? AND to_id=? AND read=0').get(r.partner_id, me.id)?.c ?? 0
+      return { ...r, partner, unread }
+    })
+    res.json({ conversations: convos })
+  })
+
+  api.get('/api/messages/:friendId', (req, res) => {
+    const me  = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const fid = req.params.friendId
+    const msgs = db.prepare(`
+      SELECT m.*, u.username as from_name FROM messages m JOIN users u ON u.id=m.from_id
+      WHERE (m.from_id=? AND m.to_id=?) OR (m.from_id=? AND m.to_id=?)
+      ORDER BY m.created_at ASC LIMIT 100
+    `).all(me.id, fid, fid, me.id)
+    db.prepare('UPDATE messages SET read=1 WHERE from_id=? AND to_id=? AND read=0').run(fid, me.id)
+    res.json({ messages: msgs })
+  })
+
+  api.post('/api/messages/:friendId', (req, res) => {
+    const me = authUser(req)
+    if (!me) return res.status(401).json({ error: 'Nicht autorisiert.' })
+    const { text } = req.body || {}
+    if (!text?.trim()) return res.json({ error: 'Kein Text.' })
+    if (text.length > 1000) return res.json({ error: 'Nachricht zu lang.' })
+    const areFriends = db.prepare('SELECT 1 FROM friends WHERE user_id=? AND friend_id=?').get(me.id, req.params.friendId)
+    if (!areFriends) return res.json({ error: 'Nur Freunde können Nachrichten senden.' })
+    const id = crypto.randomUUID()
+    db.prepare('INSERT INTO messages (id,from_id,to_id,text,read,created_at) VALUES (?,?,?,?,0,?)')
+      .run(id, me.id, req.params.friendId, text.trim(), Date.now())
+    const msg = db.prepare(`SELECT m.*,u.username as from_name FROM messages m JOIN users u ON u.id=m.from_id WHERE m.id=?`).get(id)
+    res.json({ message: msg })
   })
 
   // Serve uploaded video files
