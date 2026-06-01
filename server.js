@@ -56,8 +56,10 @@ app.post('/api/auth/register', async (req, res) => {
   const user = { id: crypto.randomUUID(), email, username, hash, code, verified: false, createdAt: Date.now() }
   db.users.push(user)
   writeDB(db)
+  // Code immer loggen (sichtbar in Render Logs)
+  console.log(`\n🔑  Verifikationscode für ${email}: ${code}\n`)
   try {
-    await resend.emails.send({
+    const { error: mailError } = await resend.emails.send({
       from: 'daylo. <onboarding@resend.dev>', to: email,
       subject: 'Dein daylo Bestätigungscode',
       html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
@@ -67,9 +69,9 @@ app.post('/api/auth/register', async (req, res) => {
         <p style="color:#999;font-size:12px;margin-top:20px">Gib diesen Code in der App ein.</p>
       </div>`,
     })
+    if (mailError) console.warn('Mail-Fehler:', mailError.message)
   } catch (err) {
-    console.warn(`⚠️  Mail nicht gesendet (${err.message})`)
-    console.log(`\n🔑  Verifikationscode für ${email}: \x1b[33m${code}\x1b[0m\n`)
+    console.warn('Mail-Fehler:', err.message)
   }
   res.json({ success: true })
 })
