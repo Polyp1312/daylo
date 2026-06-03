@@ -44,41 +44,92 @@ const UPLOAD_STEPS = [
 // ── Title input screen ─────────────────────────────────────────────────────────
 function TitleScreen({ firstThumb, onSkip, onConfirm }) {
   const [title, setTitle] = useState('')
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6"
-      style={{ background: '#0A0A0B' }}>
-      {firstThumb && (
-        <div className="w-24 h-36 rounded-2xl overflow-hidden mb-6 border border-[#2C2C2E]">
-          <img src={firstThumb} alt="" className="w-full h-full object-cover" />
-        </div>
+      className="fixed inset-0 z-50 flex flex-col">
+
+      {/* Blurred thumbnail background */}
+      {firstThumb ? (
+        <>
+          <img src={firstThumb} alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: 'blur(28px) brightness(0.35) saturate(1.4)', transform: 'scale(1.12)' }} />
+          <div className="absolute inset-0"
+            style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.2) 40%, rgba(0,0,0,0.75) 100%)' }} />
+        </>
+      ) : (
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at 50% 30%, rgba(123,97,255,0.18) 0%, #080809 60%)' }} />
       )}
-      <div className="w-8 h-8 rounded-full bg-[#7B61FF]/15 flex items-center justify-center mb-3">
-        <Pencil size={15} className="text-[#7B61FF]" />
+
+      {/* Content */}
+      <div className="relative flex-1 flex flex-col items-center justify-center px-6">
+
+        {/* Thumbnail preview */}
+        {firstThumb && (
+          <motion.div
+            initial={{ scale: 0.75, opacity: 0, y: 24 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            transition={{ type: 'spring', damping: 18, stiffness: 200, delay: 0.05 }}
+            className="w-28 h-40 rounded-3xl overflow-hidden mb-8 shadow-2xl"
+            style={{ border: '2px solid rgba(255,255,255,0.25)', boxShadow: '0 20px 60px rgba(0,0,0,0.7)' }}>
+            <img src={firstThumb} alt="" className="w-full h-full object-cover" />
+          </motion.div>
+        )}
+
+        <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}
+          className="w-full text-center">
+          <p className="text-white/50 text-sm font-semibold uppercase tracking-widest mb-2">Wie war dein Tag?</p>
+          <h2 className="text-white font-black text-[28px] mb-7 leading-tight">Gib ihm einen Titel</h2>
+
+          {/* Input — frosted glass */}
+          <div className="rounded-2xl px-5 py-4 mb-3 focus-within:border-white/35 transition-all"
+            style={{
+              background: 'rgba(255,255,255,0.08)',
+              backdropFilter: 'blur(20px)',
+              border: '1.5px solid rgba(255,255,255,0.14)',
+            }}>
+            <input
+              autoFocus
+              value={title}
+              onChange={e => setTitle(e.target.value.slice(0, 60))}
+              onKeyDown={e => e.key === 'Enter' && onConfirm(title.trim())}
+              placeholder="Beschreibe deinen Tag…"
+              className="w-full bg-transparent text-white placeholder-white/25 text-lg font-semibold text-center outline-none"
+              style={{ caretColor: 'white' }}
+            />
+          </div>
+          <AnimatePresence>
+            {title.length > 0 && (
+              <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="text-white/30 text-xs">{title.length}/60</motion.p>
+            )}
+          </AnimatePresence>
+        </motion.div>
       </div>
-      <h2 className="text-white font-bold text-xl mb-1">Vlog benennen</h2>
-      <p className="text-[#8E8E93] text-sm text-center mb-6">Gib deinem Tag einen Titel</p>
-      <div className="w-full bg-[#1C1C1E] border border-[#2C2C2E] rounded-2xl px-4 py-3.5 focus-within:border-[#7B61FF] transition-colors mb-5">
-        <input
-          autoFocus
-          value={title}
-          onChange={e => setTitle(e.target.value.slice(0, 60))}
-          onKeyDown={e => e.key === 'Enter' && onConfirm(title.trim())}
-          placeholder="Beschreibe deinen Tag…"
-          className="w-full bg-transparent text-white placeholder-[#3A3A3C] text-base outline-none"
-        />
-      </div>
-      <div className="flex gap-3 w-full">
+
+      {/* Buttons */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+        className="relative px-6 pb-14 flex gap-3">
         <motion.button whileTap={{ scale: 0.96 }} onClick={onSkip}
-          className="flex-1 py-3.5 rounded-2xl border border-[#2C2C2E] text-[#8E8E93] font-semibold text-sm">
+          className="flex-1 py-4 rounded-2xl font-semibold text-sm"
+          style={{
+            color: 'rgba(255,255,255,0.55)',
+            background: 'rgba(255,255,255,0.08)',
+            border: '1px solid rgba(255,255,255,0.14)',
+            backdropFilter: 'blur(12px)',
+          }}>
           Überspringen
         </motion.button>
         <motion.button whileTap={{ scale: 0.96 }} onClick={() => onConfirm(title.trim())}
-          className="flex-1 py-3.5 rounded-2xl text-white font-semibold text-sm"
-          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
-          Speichern
+          className="flex-1 py-4 rounded-2xl font-black text-white text-sm"
+          style={{
+            background: 'linear-gradient(135deg, #7B61FF, #00D9FF)',
+            boxShadow: '0 0 28px rgba(123,97,255,0.5)',
+          }}>
+          Speichern →
         </motion.button>
-      </div>
+      </motion.div>
     </motion.div>
   )
 }
@@ -112,7 +163,7 @@ function ProcessingScreen({ clips, title, onComplete }) {
         if (cancelled) return
 
         setStep(2)
-        setTimeout(() => { if (!cancelled) onComplete(vlog) }, 1000)
+        setTimeout(() => { if (!cancelled) onComplete(vlog) }, 1400)
       } catch (e) {
         if (!cancelled) setError(e.message)
       }
@@ -121,82 +172,177 @@ function ProcessingScreen({ clips, title, onComplete }) {
     return () => { cancelled = true }
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Error state ──
   if (error) return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center px-10 gap-5"
-      style={{ background: '#0A0A0B' }}>
-      <AlertCircle size={52} className="text-red-400" />
-      <p className="text-white font-bold text-lg text-center">Upload fehlgeschlagen</p>
-      <p className="text-[#8E8E93] text-sm text-center">{error}</p>
-      <motion.button whileTap={{ scale: 0.94 }} onClick={() => window.location.reload()}
-        className="px-6 py-3 rounded-2xl bg-[#7B61FF] text-white font-semibold">
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center px-10 gap-6"
+      style={{ background: '#080809' }}>
+      <motion.div
+        initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: 'spring', damping: 14 }}
+        className="w-20 h-20 rounded-3xl flex items-center justify-center"
+        style={{ background: 'rgba(255,69,58,0.15)', border: '1.5px solid rgba(255,69,58,0.3)' }}>
+        <AlertCircle size={36} className="text-red-400" />
+      </motion.div>
+      <div className="text-center">
+        <p className="text-white font-black text-xl mb-2">Upload fehlgeschlagen</p>
+        <p className="text-[#8E8E93] text-sm leading-relaxed">{error}</p>
+      </div>
+      <motion.button whileTap={{ scale: 0.96 }} onClick={() => window.location.reload()}
+        className="px-8 py-3.5 rounded-2xl font-black text-white"
+        style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
         Erneut versuchen
       </motion.button>
     </motion.div>
   )
 
   const done = step === 2
+  const barWidth = done ? '100%' : step === 0 ? '6%' : `${12 + progress * 0.83}%`
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center px-10"
-      style={{ background: '#0A0A0B' }}>
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center px-8"
+      style={{ background: 'radial-gradient(ellipse at 50% 20%, rgba(123,97,255,0.22) 0%, #080809 55%)' }}>
 
-      <div className="relative w-28 h-28 mb-10 flex items-center justify-center">
-        {!done ? (
-          <>
-            <motion.div className="absolute inset-0 rounded-full"
-              style={{ border: '3px solid transparent', borderTopColor: '#7B61FF', borderRightColor: '#00D9FF' }}
-              animate={{ rotate: 360 }} transition={{ duration: 1.1, repeat: Infinity, ease: 'linear' }} />
-            <motion.div className="absolute inset-3 rounded-full"
-              style={{ border: '2px solid transparent', borderTopColor: '#00D9FF' }}
-              animate={{ rotate: -360 }} transition={{ duration: 1.7, repeat: Infinity, ease: 'linear' }} />
-            <span className="text-3xl">🎬</span>
-          </>
+      {/* Ambient glow */}
+      <motion.div className="absolute top-0 left-1/2 -translate-x-1/2 w-[500px] h-64 rounded-full blur-3xl pointer-events-none"
+        style={{ background: 'rgba(123,97,255,0.12)' }}
+        animate={{ opacity: [0.8, 1.2, 0.8] }}
+        transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }} />
+
+      {/* Icon */}
+      <div className="relative mb-10">
+        <AnimatePresence mode="wait">
+          {!done ? (
+            <motion.div key="loading"
+              initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.6 }}
+              className="relative w-36 h-36 flex items-center justify-center">
+              {/* Outer ring */}
+              <motion.div className="absolute inset-0 rounded-full"
+                style={{ border: '3px solid transparent', borderTopColor: '#7B61FF', borderRightColor: '#00D9FF' }}
+                animate={{ rotate: 360 }} transition={{ duration: 1.1, repeat: Infinity, ease: 'linear' }} />
+              {/* Inner ring */}
+              <motion.div className="absolute inset-4 rounded-full"
+                style={{ border: '2px solid transparent', borderTopColor: '#00D9FF', borderBottomColor: '#7B61FF80' }}
+                animate={{ rotate: -360 }} transition={{ duration: 1.8, repeat: Infinity, ease: 'linear' }} />
+              {/* Icon center */}
+              <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
+                style={{ background: 'rgba(123,97,255,0.15)', border: '1px solid rgba(123,97,255,0.3)' }}>
+                <span className="text-4xl select-none">🎬</span>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div key="done"
+              initial={{ scale: 0, rotate: -20 }}
+              animate={{ scale: 1, rotate: 0 }}
+              transition={{ type: 'spring', damping: 11, stiffness: 200 }}
+              className="relative w-36 h-36 rounded-full flex items-center justify-center"
+              style={{
+                background: 'linear-gradient(135deg, #2ECC71, #00D9FF)',
+                boxShadow: '0 0 60px rgba(46,204,113,0.55), 0 0 120px rgba(0,217,255,0.2)',
+              }}>
+              <Check size={56} className="text-white" strokeWidth={2.5} />
+              {/* Pulse rings */}
+              {[1.3, 1.6].map((s, i) => (
+                <motion.div key={i} className="absolute inset-0 rounded-full"
+                  style={{ border: '2px solid rgba(46,204,113,0.35)' }}
+                  animate={{ scale: [1, s, 1], opacity: [0.7, 0, 0.7] }}
+                  transition={{ duration: 2.2, repeat: Infinity, delay: i * 0.5 }} />
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Text */}
+      <AnimatePresence mode="wait">
+        {done ? (
+          <motion.div key="done-text"
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+            className="text-center mb-12 px-4">
+            <h2 className="text-white font-black text-3xl mb-2 leading-tight">Gespeichert! 🎉</h2>
+            <p className="text-[#8E8E93] text-base leading-relaxed">Deine Crew kann ihn jetzt sehen</p>
+          </motion.div>
         ) : (
-          <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
-            transition={{ type: 'spring', damping: 12, stiffness: 180 }}
-            className="w-28 h-28 rounded-full flex items-center justify-center"
-            style={{ border: '3px solid #2ECC71', background: '#2ECC7115' }}>
-            <Check size={44} className="text-[#2ECC71]" strokeWidth={2.5} />
+          <motion.div key="loading-text"
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+            className="text-center mb-12 px-4">
+            <h2 className="text-white font-black text-2xl mb-2">Wird verarbeitet…</h2>
+            <motion.p key={step} initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="text-[#8E8E93] text-base">
+              {step === 0 ? 'Clips zusammenfügen'
+               : step === 1 ? `Hochladen ${progress}%`
+               : 'Fast fertig…'}
+            </motion.p>
           </motion.div>
         )}
-      </div>
+      </AnimatePresence>
 
-      <h2 className="text-white text-2xl font-bold mb-2 text-center">
-        {done ? 'Vlog gespeichert! 🎉' : 'Wird gespeichert…'}
-      </h2>
-      <p className="text-[#8E8E93] text-sm mb-12 text-center">
-        {done ? 'Deine Freunde können ihn jetzt sehen' : 'Dein Vlog wird hochgeladen'}
-      </p>
+      {/* Steps */}
+      <div className="w-full space-y-4 mb-10">
+        {UPLOAD_STEPS.map((s, i) => {
+          const isDone    = step > i
+          const isCurrent = step === i + 1 && !done
+          return (
+            <motion.div key={i}
+              animate={{ opacity: step < i ? 0.35 : 1 }}
+              className="flex items-center gap-4">
+              <motion.div
+                animate={{
+                  backgroundColor: isDone ? '#2ECC71' : isCurrent ? 'rgba(123,97,255,0.25)' : 'rgba(44,44,46,0.8)',
+                  scale: isCurrent ? [1, 1.08, 1] : 1,
+                }}
+                transition={{ scale: { duration: 1.2, repeat: isCurrent ? Infinity : 0 } }}
+                className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                style={{ border: isCurrent ? '1.5px solid rgba(123,97,255,0.6)' : 'none' }}>
+                {isDone ? (
+                  <Check size={15} className="text-white" strokeWidth={2.5} />
+                ) : isCurrent ? (
+                  <motion.div className="w-2.5 h-2.5 rounded-full bg-[#7B61FF]"
+                    animate={{ scale: [1, 1.6, 1] }}
+                    transition={{ duration: 0.9, repeat: Infinity }} />
+                ) : (
+                  <span className="text-[#3A3A3C] text-xs font-black">{i + 1}</span>
+                )}
+              </motion.div>
 
-      <div className="w-full space-y-5">
-        {UPLOAD_STEPS.map((s, i) => (
-          <div key={i} className="flex items-center gap-4">
-            <motion.div
-              animate={step > i ? { scale: 1, opacity: 1 } : { scale: 0.7, opacity: 0.25 }}
-              className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${step > i ? 'bg-[#2ECC71]' : 'bg-[#2C2C2E]'}`}>
-              {step > i
-                ? <Check size={14} className="text-white" />
-                : <span className="text-[#8E8E93] text-xs font-bold">{i + 1}</span>}
+              <motion.span
+                animate={{ color: isDone ? '#2ECC71' : isCurrent ? '#ffffff' : '#3A3A3C' }}
+                className="text-sm font-bold flex-1">
+                {s.label}
+              </motion.span>
+
+              {isCurrent && i === 1 && (
+                <motion.span
+                  key={progress}
+                  initial={{ scale: 1.2 }} animate={{ scale: 1 }}
+                  className="text-[#7B61FF] text-sm font-black tabular-nums">
+                  {progress}%
+                </motion.span>
+              )}
+              {isCurrent && i !== 1 && (
+                <motion.div className="w-4 h-4 rounded-full border-2 border-t-transparent border-[#7B61FF]"
+                  animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }} />
+              )}
+              {isDone && (
+                <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
+                  transition={{ type: 'spring', damping: 12 }}
+                  className="w-5 h-5 rounded-full bg-[#2ECC71]/20 flex items-center justify-center">
+                  <Check size={10} className="text-[#2ECC71]" strokeWidth={3} />
+                </motion.div>
+              )}
             </motion.div>
-            <motion.span animate={{ color: step > i ? '#fff' : '#3A3A3C' }}
-              className="text-sm font-medium flex-1">{s.label}</motion.span>
-            {step === i + 1 && !done && i === 1 && (
-              <span className="text-[#7B61FF] text-xs font-bold">{progress}%</span>
-            )}
-            {step === i + 1 && !done && i !== 1 && (
-              <motion.div className="w-4 h-4 rounded-full border-2 border-t-transparent border-[#7B61FF]"
-                animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }} />
-            )}
-          </div>
-        ))}
+          )
+        })}
       </div>
 
-      <div className="w-full mt-10 h-1.5 rounded-full bg-[#2C2C2E] overflow-hidden">
+      {/* Progress bar */}
+      <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(44,44,46,0.6)' }}>
         <motion.div className="h-full rounded-full"
           style={{ background: 'linear-gradient(90deg, #7B61FF, #00D9FF)' }}
-          animate={{ width: done ? '100%' : step === 0 ? '5%' : `${10 + progress * 0.85}%` }}
-          transition={{ duration: 0.3 }} />
+          animate={{ width: barWidth }}
+          transition={{ duration: 0.4, ease: 'easeOut' }} />
       </div>
     </motion.div>
   )

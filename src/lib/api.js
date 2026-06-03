@@ -89,20 +89,30 @@ function xhrSend(path, formData) {
 }
 
 export const api = {
-  register:       (email, password, username) => req('POST',   '/api/auth/register',      { email, password, username }),
-  verify:         (email, code)               => req('POST',   '/api/auth/verify',        { email, code }),
-  login:          (email, password)           => req('POST',   '/api/auth/login',         { email, password }),
+  register:       (email, password, username) => req('POST',   '/api/auth/register',        { email, password, username }),
+  verify:         (email, code)               => req('POST',   '/api/auth/verify',          { email, code }),
+  login:          (email, password)           => req('POST',   '/api/auth/login',           { email, password }),
   me:             ()                          => req('GET',    '/api/auth/me'),
-  updateUsername: (username)                  => req('PUT',    '/api/auth/username',      { username }),
+  updateUsername: (username)                  => req('PUT',    '/api/auth/username',        { username }),
   uploadAvatar:   (formData)                  => xhrSend('/api/auth/avatar', formData),
   search:         (q, signal)                 => req('GET',    `/api/users/search?q=${encodeURIComponent(q)}`, undefined, signal),
+  auth: {
+    settings:       (body)                    => req('PUT',    '/api/auth/settings',        body),
+    changePassword: (currentPassword, newPassword) => req('POST', '/api/auth/change-password', { currentPassword, newPassword }),
+    deleteAccount:  (password)                => req('DELETE', '/api/auth/account',         { password }),
+  },
   friends: {
-    list:     ()             => req('GET',    '/api/friends'),
-    requests: ()             => req('GET',    '/api/friends/requests'),
-    request:  (targetId)    => req('POST',   '/api/friends/request',   { targetId }),
-    accept:   (requesterId) => req('POST',   '/api/friends/accept',    { requesterId }),
-    decline:  (requesterId) => req('POST',   '/api/friends/decline',   { requesterId }),
-    remove:   (id)          => req('DELETE', `/api/friends/${id}`),
+    list:          ()             => req('GET',    '/api/friends'),
+    requests:      ()             => req('GET',    '/api/friends/requests'),
+    sent:          ()             => req('GET',    '/api/friends/sent'),
+    request:       (targetId)    => req('POST',   '/api/friends/request',              { targetId }),
+    cancelRequest: (targetId)    => req('DELETE', `/api/friends/request/${targetId}`),
+    accept:        (requesterId) => req('POST',   '/api/friends/accept',               { requesterId }),
+    decline:       (requesterId) => req('POST',   '/api/friends/decline',              { requesterId }),
+    remove:        (id)          => req('DELETE', `/api/friends/${id}`),
+  },
+  users: {
+    profile: (userId) => req('GET', `/api/users/${userId}/profile`),
   },
   presence: {
     ping: ()    => req('POST', '/api/presence/ping'),
@@ -135,8 +145,9 @@ export const api = {
     delete:       (id)              => req('DELETE', `/api/groups/${id}`),
     addMember:    (groupId, userId) => req('POST',   `/api/groups/${groupId}/members`,  { userId }),
     removeMember: (groupId, userId) => req('DELETE', `/api/groups/${groupId}/members/${userId}`),
-    messages:     (groupId, limit)  => req('GET',    `/api/groups/${groupId}/messages${limit ? `?limit=${limit}` : ''}`),
-    sendMessage:  (groupId, text)   => req('POST',   `/api/groups/${groupId}/messages`, { text }),
+    messages:     (groupId, limit)           => req('GET',    `/api/groups/${groupId}/messages${limit ? `?limit=${limit}` : ''}`),
+    sendMessage:  (groupId, text, replyToId) => req('POST',   `/api/groups/${groupId}/messages`, { text, ...(replyToId ? { replyToId } : {}) }),
+    reactMessage: (groupId, msgId, emoji)    => req('POST',   `/api/groups/${groupId}/messages/${msgId}/react`, { emoji }),
     feed:         (groupId, limit)  => req('GET',    `/api/groups/${groupId}/feed${limit ? `?limit=${limit}` : ''}`),
   },
   messages: {

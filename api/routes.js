@@ -179,6 +179,7 @@ function formatGroup(g, forUserId = null) {
   }
   return {
     id: g.id, name: g.name, emoji: g.emoji, creatorId: g.creator_id,
+    description: g.description ?? null,
     memberIds: members.map(m => m.id), members, rotation,
     todayIdx: g.rotation_idx, lastRotationDate: g.last_rotation_date, unreadCount,
   }
@@ -439,11 +440,61 @@ export function registerRoutes(api) {
     if (!auth?.startsWith('Bearer ')) return res.status(401).json({ error: 'Nicht autorisiert.' })
     try {
       const user = jwt.verify(auth.slice(7), JWT_SECRET)
-      // Re-fetch from DB to get latest username/avatar
-      const fresh = db.prepare('SELECT id,email,username,verified,avatar FROM users WHERE id=?').get(user.id)
+      const fresh = db.prepare('SELECT id,email,username,verified,avatar,bio,notif_prefs,searchable,color,created_at FROM users WHERE id=?').get(user.id)
       if (!fresh) return res.status(404).json({ error: 'Benutzer nicht gefunden.' })
-      res.json({ user: { ...fresh, verified: !!fresh.verified } })
+      res.json({ user: { ...fresh, verified: !!fresh.verified, searchable: fresh.searchable !== 0 } })
     } catch { res.status(401).json({ error: 'Session abgelaufen.' }) }
+  })
+
+  api.put('/api/auth/settings', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const updates = []; const params = []
+    if (req.body?.bio !== undefined) {
+      updates.push('bio=?'); params.push(sanitizeText(req.body.bio ?? '', 120))
+    }
+    if (req.body?.notifPrefs !== undefined) {
+      updates.push('notif_prefs=?'); params.push(JSON.stringify(req.body.notifPrefs))
+    }
+    if (req.body?.searchable !== undefined) {
+      updates.push('searchable=?'); params.push(req.body.searchable ? 1 : 0)
+    }
+    if (req.body?.color !== undefined) {
+      const VALID = ['#7B61FF','#FF6B9D','#00D9FF','#FF9F43','#2ECC71','#FF453A','#BF5AF2','#32ADE6','#FF6B35','#30B0C7','#34C759','#FFD60A']
+      if (VALID.includes(req.body.color)) { updates.push('color=?'); params.push(req.body.color) }
+    }
+    if (!updates.length) return res.status(400).json({ error: 'Keine Änderungen.' })
+    params.push(me.id)
+    db.prepare(`UPDATE users SET ${updates.join(',')} WHERE id=?`).run(...params)
+    res.json({ success: true })
+  })
+
+  api.post('/api/auth/change-password', async (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const { currentPassword, newPassword } = req.body || {}
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ error: 'Alle Felder ausfüllen.' })
+    if (newPassword.length < 8)
+      return res.status(400).json({ error: 'Neues Passwort: mindestens 8 Zeichen.' })
+    const u = db.prepare('SELECT hash FROM users WHERE id=?').get(me.id)
+    if (!u || !await bcrypt.compare(currentPassword, u.hash))
+      return res.status(401).json({ error: 'Aktuelles Passwort ist falsch.' })
+    const hash = await bcrypt.hash(newPassword, 12)
+    db.prepare('UPDATE users SET hash=? WHERE id=?').run(hash, me.id)
+    res.json({ success: true })
+  })
+
+  api.delete('/api/auth/account', async (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const { password } = req.body || {}
+    if (!password) return res.status(400).json({ error: 'Passwort erforderlich.' })
+    const u = db.prepare('SELECT hash FROM users WHERE id=?').get(me.id)
+    if (!u || !await bcrypt.compare(password, u.hash))
+      return res.status(401).json({ error: 'Falsches Passwort.' })
+    db.prepare('DELETE FROM users WHERE id=?').run(me.id)
+    res.json({ success: true })
   })
 
   api.post('/api/auth/avatar', avatarUpload.single('avatar'), (req, res) => {
@@ -496,11 +547,40 @@ export function registerRoutes(api) {
       LEFT JOIN friends         f      ON f.user_id          = ? AND f.friend_id        = u.id
       LEFT JOIN friend_requests fr_in  ON fr_in.target_id    = ? AND fr_in.requester_id = u.id
       LEFT JOIN friend_requests fr_out ON fr_out.requester_id = ? AND fr_out.target_id   = u.id
-      WHERE u.verified = 1 AND u.id != ?
+      WHERE u.verified = 1 AND u.id != ? AND (u.searchable = 1 OR u.id = ?)
         AND (LOWER(u.username) LIKE ? OR LOWER(u.email) LIKE ?)
       LIMIT 20
-    `).all(me.id, me.id, me.id, me.id, q, q)
+    `).all(me.id, me.id, me.id, me.id, me.id, q, q)
     res.json({ users: results })
+  })
+
+  // ── User profiles ────────────────────────────────────────────────────────────
+
+  api.get('/api/users/:id/profile', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const targetId = req.params.id
+    const u = db.prepare('SELECT id, username, avatar, created_at FROM users WHERE id=? AND verified=1').get(targetId)
+    if (!u) return res.status(404).json({ error: 'Nicht gefunden.' })
+    if (targetId !== me.id) {
+      const areFriends = db.prepare('SELECT 1 FROM friends WHERE user_id=? AND friend_id=?').get(me.id, targetId)
+      if (!areFriends) {
+        const shareGroup = db.prepare(`
+          SELECT 1 FROM group_members gm1
+          JOIN group_members gm2 ON gm1.group_id = gm2.group_id
+          WHERE gm1.user_id=? AND gm2.user_id=?
+        `).get(me.id, targetId)
+        if (!shareGroup) return res.status(403).json({ error: 'Kein Zugriff.' })
+      }
+    }
+    const vlogCount = db.prepare('SELECT COUNT(*) as c FROM vlogs WHERE user_id=?').get(targetId)?.c ?? 0
+    const streak = calcStreak(targetId)
+    const mutualGroups = db.prepare(`
+      SELECT g.id, g.name, g.emoji FROM user_groups g
+      JOIN group_members gm1 ON gm1.group_id = g.id AND gm1.user_id = ?
+      JOIN group_members gm2 ON gm2.group_id = g.id AND gm2.user_id = ?
+    `).all(me.id, targetId)
+    res.json({ user: u, vlogCount, streak, mutualGroups })
   })
 
   // ── Friends ─────────────────────────────────────────────────────────────────
@@ -560,6 +640,24 @@ export function registerRoutes(api) {
       addNotification(requesterId, 'friend_accepted', me.id,
         `${accepter?.username ?? 'Jemand'} hat deine Freundschaftsanfrage angenommen!`)
     })()
+    res.json({ success: true })
+  })
+
+  api.get('/api/friends/sent', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const sent = db.prepare(`
+      SELECT u.id, u.username, u.avatar
+      FROM friend_requests fr JOIN users u ON u.id = fr.target_id
+      WHERE fr.requester_id = ?
+    `).all(me.id)
+    res.json({ sent })
+  })
+
+  api.delete('/api/friends/request/:targetId', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    db.prepare('DELETE FROM friend_requests WHERE requester_id=? AND target_id=?').run(me.id, req.params.targetId)
     res.json({ success: true })
   })
 
@@ -964,20 +1062,57 @@ export function registerRoutes(api) {
     if (!me) return
     if (!db.prepare('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?').get(req.params.id, me.id))
       return res.status(403).json({ error: 'Kein Zugriff.' })
-    const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit) || 80))
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 80))
     const messages = db.prepare(`
-      SELECT gm.id, gm.group_id, gm.user_id, gm.text, gm.created_at,
+      SELECT gm.id, gm.group_id, gm.user_id, gm.text, gm.created_at, gm.reply_to_id,
              u.username as from_name, u.avatar
       FROM group_messages gm JOIN users u ON u.id = gm.user_id
       WHERE gm.group_id = ?
       ORDER BY gm.created_at DESC LIMIT ?
     `).all(req.params.id, limit).reverse()
+
+    // Fetch reactions grouped by message
+    const msgIds = messages.map(m => m.id)
+    const reactionsMap = {}
+    if (msgIds.length) {
+      const ph = msgIds.map(() => '?').join(',')
+      const rxRows = db.prepare(`
+        SELECT message_id, emoji, COUNT(*) as count,
+               MAX(CASE WHEN user_id=? THEN 1 ELSE 0 END) as mine
+        FROM group_message_reactions WHERE message_id IN (${ph})
+        GROUP BY message_id, emoji
+      `).all(me.id, ...msgIds)
+      for (const r of rxRows) {
+        if (!reactionsMap[r.message_id]) reactionsMap[r.message_id] = []
+        reactionsMap[r.message_id].push({ emoji: r.emoji, count: r.count, mine: !!r.mine })
+      }
+    }
+
+    // Fetch reply-to previews
+    const replyIds = [...new Set(messages.filter(m => m.reply_to_id).map(m => m.reply_to_id))]
+    const replyMap = {}
+    if (replyIds.length) {
+      const ph = replyIds.map(() => '?').join(',')
+      const replyRows = db.prepare(`
+        SELECT gm.id, gm.text, u.username as from_name
+        FROM group_messages gm JOIN users u ON u.id = gm.user_id
+        WHERE gm.id IN (${ph})
+      `).all(...replyIds)
+      for (const r of replyRows) replyMap[r.id] = r
+    }
+
+    const result = messages.map(m => ({
+      ...m,
+      reactions: reactionsMap[m.id] ?? [],
+      replyTo: m.reply_to_id ? (replyMap[m.reply_to_id] ?? null) : null,
+    }))
+
     const now = Date.now()
     db.prepare(`
       INSERT INTO group_message_reads (group_id, user_id, last_read_at) VALUES (?,?,?)
       ON CONFLICT(group_id, user_id) DO UPDATE SET last_read_at=excluded.last_read_at
     `).run(req.params.id, me.id, now)
-    res.json({ messages })
+    res.json({ messages: result })
   })
 
   api.post('/api/groups/:id/messages', (req, res) => {
@@ -987,10 +1122,13 @@ export function registerRoutes(api) {
       return res.status(403).json({ error: 'Kein Zugriff.' })
     const text = sanitizeText(req.body?.text ?? '', 1000)
     if (!text) return res.status(400).json({ error: 'Nachricht fehlt.' })
+    const replyToId = req.body?.replyToId ?? null
+    if (replyToId && !db.prepare('SELECT 1 FROM group_messages WHERE id=? AND group_id=?').get(replyToId, req.params.id))
+      return res.status(400).json({ error: 'Ungültige reply_to_id.' })
     const id  = crypto.randomUUID()
     const now = Date.now()
-    db.prepare('INSERT INTO group_messages (id,group_id,user_id,text,created_at) VALUES (?,?,?,?,?)')
-      .run(id, req.params.id, me.id, text, now)
+    db.prepare('INSERT INTO group_messages (id,group_id,user_id,text,reply_to_id,created_at) VALUES (?,?,?,?,?,?)')
+      .run(id, req.params.id, me.id, text, replyToId, now)
     db.prepare(`
       INSERT INTO group_message_reads (group_id, user_id, last_read_at) VALUES (?,?,?)
       ON CONFLICT(group_id, user_id) DO UPDATE SET last_read_at=excluded.last_read_at
@@ -999,13 +1137,44 @@ export function registerRoutes(api) {
       SELECT gm.*, u.username as from_name, u.avatar
       FROM group_messages gm JOIN users u ON u.id=gm.user_id WHERE gm.id=?
     `).get(id)
+    // Attach reply preview if present
+    let replyTo = null
+    if (replyToId) {
+      replyTo = db.prepare(`
+        SELECT gm.id, gm.text, u.username as from_name
+        FROM group_messages gm JOIN users u ON u.id=gm.user_id WHERE gm.id=?
+      `).get(replyToId) ?? null
+    }
     const g      = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
     const others = db.prepare('SELECT user_id FROM group_members WHERE group_id=? AND user_id!=?').all(req.params.id, me.id)
     const sender = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
     for (const o of others) {
       pushToUser(o.user_id, `${g?.emoji ?? '💬'} ${g?.name ?? 'Gruppe'}`, `${sender?.username ?? '?'}: ${text.slice(0, 80)}`)
     }
-    res.status(201).json({ message: msg })
+    res.status(201).json({ message: { ...msg, reactions: [], replyTo } })
+  })
+
+  api.post('/api/groups/:id/messages/:msgId/react', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?').get(req.params.id, me.id))
+      return res.status(403).json({ error: 'Kein Zugriff.' })
+    const { emoji } = req.body || {}
+    const ALLOWED = ['👍', '❤️', '😂', '😮', '🔥', '🥺']
+    if (!ALLOWED.includes(emoji)) return res.status(400).json({ error: 'Ungültiges Emoji.' })
+    if (!db.prepare('SELECT 1 FROM group_messages WHERE id=? AND group_id=?').get(req.params.msgId, req.params.id))
+      return res.status(404).json({ error: 'Nachricht nicht gefunden.' })
+    const exists = db.prepare('SELECT 1 FROM group_message_reactions WHERE message_id=? AND user_id=? AND emoji=?').get(req.params.msgId, me.id, emoji)
+    if (exists) {
+      db.prepare('DELETE FROM group_message_reactions WHERE message_id=? AND user_id=? AND emoji=?').run(req.params.msgId, me.id, emoji)
+    } else {
+      db.prepare('INSERT OR IGNORE INTO group_message_reactions (message_id, user_id, emoji) VALUES (?,?,?)').run(req.params.msgId, me.id, emoji)
+    }
+    const reactions = db.prepare(`
+      SELECT emoji, COUNT(*) as count, MAX(CASE WHEN user_id=? THEN 1 ELSE 0 END) as mine
+      FROM group_message_reactions WHERE message_id=? GROUP BY emoji
+    `).all(me.id, req.params.msgId).map(r => ({ emoji: r.emoji, count: r.count, mine: !!r.mine }))
+    res.json({ reactions })
   })
 
   api.delete('/api/groups/:id/members/:userId', (req, res) => {

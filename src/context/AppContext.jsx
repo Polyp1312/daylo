@@ -18,7 +18,8 @@ export function formatUser(u) {
   const avatar = raw
     ? (raw.startsWith('/') || raw.startsWith('http') ? raw : `/uploads/avatars/${raw}`)
     : null
-  return { id: u.id, name, initials: name.slice(0, 2).toUpperCase(), color: deriveColor(u.id), avatar }
+  const color = u.color ?? deriveColor(u.id)
+  return { id: u.id, name, initials: name.slice(0, 2).toUpperCase(), color, avatar }
 }
 
 function urlBase64ToUint8Array(base64) {
@@ -194,6 +195,11 @@ export function AppProvider({ children }) {
     if (group) setGroups(p => p.map(g => g.id === id ? group : g))
   }, [])
 
+  const updateGroup = useCallback(async (id, body) => {
+    const { group } = await api.groups.update(id, body)
+    if (group) setGroups(p => p.map(g => g.id === id ? group : g))
+  }, [])
+
   const addMember = useCallback(async (groupId, u) => {
     if (!friends.some(f => f.id === u.id)) setFriends(p => [...p, u])
     const { group } = await api.groups.addMember(groupId, u.id)
@@ -214,8 +220,8 @@ export function AppProvider({ children }) {
     return messages ?? []
   }, [])
 
-  const sendGroupMessage = useCallback(async (groupId, text) => {
-    const { message } = await api.groups.sendMessage(groupId, text)
+  const sendGroupMessage = useCallback(async (groupId, text, replyToId = null) => {
+    const { message } = await api.groups.sendMessage(groupId, text, replyToId)
     return message ?? null
   }, [])
 
@@ -258,7 +264,7 @@ export function AppProvider({ children }) {
       me, friends, friendIds, requests, groups, myVlogs, myStreak,
       notifications, presences, unreadMessages, unreadGroupMsgs,
       getUser, acceptRequest, declineRequest, sendRequest, removeFriend,
-      createGroup, deleteGroup, renameGroup, addMember, removeMember, reloadGroups,
+      createGroup, deleteGroup, renameGroup, updateGroup, addMember, removeMember, reloadGroups,
       fetchGroupMessages, sendGroupMessage,
       addVlog, deleteVlog, markNotificationsRead, clearUnread,
     }}>

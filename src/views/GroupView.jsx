@@ -1,14 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, Trash2, UserPlus, ChevronLeft, Users, Check, Pencil, X, Crown, MessageCircle, Send, LogOut, Play } from 'lucide-react'
+import {
+  Plus, Trash2, UserPlus, ChevronLeft, Users, Check, Pencil, X, Crown,
+  MessageCircle, Send, LogOut, Play, CornerUpLeft,
+} from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { useToast } from '../components/Toast'
 import UserAvatar from '../components/UserAvatar'
+import { api } from '../lib/api'
 
-const fwd = { initial: { opacity: 0, x: 40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] } }
-const back = { initial: { opacity: 0, x: -40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: 30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] } }
+const fwd  = { initial: { opacity: 0, x: 40  }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] } }
+const back = { initial: { opacity: 0, x: -40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x:  30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] } }
 
 const EMOJIS = ['🎬', '🎮', '🏋️', '🌍', '🎵', '🍕', '🏄', '⚽', '🎭', '🚀', '🎨', '📚', '🏕️', '🎯', '🌅', '🐉']
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '🥺']
 
 function formatTime(ts) {
   const d = new Date(ts)
@@ -20,7 +25,7 @@ function formatTime(ts) {
 }
 
 // ── Group list ───────────────────────────────────────────────────────────────
-function GroupList({ onSelect, onCreate }) {
+function GroupList({ onSelect, onCreate, onOpenChat }) {
   const { groups, getUser } = useApp()
   const totalUnread = groups.reduce((s, g) => s + (g.unreadCount ?? 0), 0)
 
@@ -38,10 +43,7 @@ function GroupList({ onSelect, onCreate }) {
         </div>
         <motion.button whileTap={{ scale: 0.88 }} onClick={onCreate}
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold"
-          style={{
-            background: 'linear-gradient(135deg, #7B61FF, #00D9FF)',
-            boxShadow: '0 0 16px rgba(123,97,255,0.4)',
-          }}>
+          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 16px rgba(123,97,255,0.4)' }}>
           <Plus size={14} className="text-white" />
           <span className="text-white">Neu</span>
         </motion.button>
@@ -66,9 +68,8 @@ function GroupList({ onSelect, onCreate }) {
       ) : (
         <div className="px-5 space-y-3">
           {groups.map((g, i) => {
-            const todayUser = getUser(g.rotation[g.todayIdx % Math.max(g.rotation.length, 1)] ?? g.memberIds[0])
-            const hasUnread = (g.unreadCount ?? 0) > 0
-            // Show up to 3 member avatars
+            const todayUser    = getUser(g.rotation[g.todayIdx % Math.max(g.rotation.length, 1)] ?? g.memberIds[0])
+            const hasUnread    = (g.unreadCount ?? 0) > 0
             const previewMembers = g.memberIds.slice(0, 3).map(id => getUser(id)).filter(Boolean)
 
             return (
@@ -85,7 +86,6 @@ function GroupList({ onSelect, onCreate }) {
                   border: `1px solid ${hasUnread ? 'rgba(123,97,255,0.35)' : 'rgba(255,255,255,0.06)'}`,
                 }}>
 
-                {/* Glow for unread */}
                 {hasUnread && (
                   <div className="absolute -top-8 -right-8 w-32 h-32 rounded-full blur-3xl pointer-events-none"
                     style={{ background: 'rgba(123,97,255,0.25)' }} />
@@ -116,8 +116,6 @@ function GroupList({ onSelect, onCreate }) {
                     ) : (
                       <p className="text-xs text-[#8E8E93] mt-0.5">{g.memberIds.length} Mitglieder</p>
                     )}
-
-                    {/* Member avatar stack */}
                     <div className="flex items-center gap-[-6px] mt-2">
                       {previewMembers.map((m, idx) => (
                         <div key={m.id} className="rounded-full border-2 border-[#0A0A0B]"
@@ -134,18 +132,30 @@ function GroupList({ onSelect, onCreate }) {
                     </div>
                   </div>
 
-                  {/* Today indicator */}
-                  {todayUser && !hasUnread && (
-                    <div className="flex flex-col items-center gap-1 flex-shrink-0">
-                      <div className="relative">
-                        <UserAvatar user={todayUser} size={36} />
-                        <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#7B61FF] border-2 border-[#0A0A0B] flex items-center justify-center">
-                          <span className="text-[7px] text-white font-black">▶</span>
+                  {/* Right side: today indicator or direct chat button */}
+                  <div className="flex flex-col items-center gap-2 flex-shrink-0">
+                    {todayUser && !hasUnread && (
+                      <div className="flex flex-col items-center gap-1">
+                        <div className="relative">
+                          <UserAvatar user={todayUser} size={32} />
+                          <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#7B61FF] border-2 border-[#0A0A0B] flex items-center justify-center">
+                            <span className="text-[6px] text-white font-black">▶</span>
+                          </div>
                         </div>
+                        <span className="text-[9px] font-black text-[#7B61FF] uppercase tracking-wide">Heute</span>
                       </div>
-                      <span className="text-[9px] font-black text-[#7B61FF] uppercase tracking-wide">Heute</span>
-                    </div>
-                  )}
+                    )}
+                    {/* Direct chat button */}
+                    <motion.button whileTap={{ scale: 0.82 }}
+                      onClick={e => { e.stopPropagation(); onOpenChat(g.id) }}
+                      className="w-9 h-9 rounded-full flex items-center justify-center relative"
+                      style={{
+                        background: hasUnread ? 'rgba(123,97,255,0.8)' : 'rgba(44,44,46,0.9)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                      }}>
+                      <MessageCircle size={15} className="text-white" />
+                    </motion.button>
+                  </div>
                 </div>
               </motion.div>
             )
@@ -178,7 +188,6 @@ function CreateGroup({ onBack, onCreated }) {
         <span className="text-xl font-black text-white">Neue Gruppe</span>
       </div>
 
-      {/* Preview */}
       <div className="flex justify-center mb-8">
         <div className="w-24 h-24 rounded-3xl flex items-center justify-center text-5xl"
           style={{
@@ -238,13 +247,14 @@ function CreateGroup({ onBack, onCreated }) {
 
 // ── Group detail ─────────────────────────────────────────────────────────────
 function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
-  const { groups, me, getUser, removeMember, deleteGroup, renameGroup, presences } = useApp()
+  const { groups, me, getUser, removeMember, deleteGroup, renameGroup, updateGroup, presences } = useApp()
   const group = groups.find(g => g.id === groupId)
   const [confirmRemove, setConfirmRemove] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmLeave,  setConfirmLeave]  = useState(false)
   const [editing,       setEditing]       = useState(false)
   const [editName,      setEditName]      = useState(group?.name ?? '')
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
 
   if (!group) { onBack(); return null }
 
@@ -271,9 +281,42 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
   }
 
   return (
-    <motion.div key={`detail-${groupId}`} {...fwd} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
+    <motion.div key={`detail-${groupId}`} {...fwd} className="min-h-screen pb-28 relative" style={{ background: '#0A0A0B' }}>
 
-      {/* Header with gradient */}
+      {/* Emoji picker overlay */}
+      <AnimatePresence>
+        {showEmojiPicker && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end"
+            style={{ background: 'rgba(0,0,0,0.7)' }}
+            onClick={() => setShowEmojiPicker(false)}>
+            <motion.div
+              initial={{ y: 60 }} animate={{ y: 0 }} exit={{ y: 60 }}
+              transition={{ type: 'spring', damping: 24, stiffness: 300 }}
+              className="w-full p-5 rounded-t-3xl"
+              style={{ background: '#1C1C1E', border: '1px solid rgba(255,255,255,0.08)' }}
+              onClick={e => e.stopPropagation()}>
+              <p className="text-white font-black text-sm mb-4 text-center">Emoji ändern</p>
+              <div className="grid grid-cols-8 gap-2 mb-4">
+                {EMOJIS.map(e => (
+                  <motion.button key={e} whileTap={{ scale: 0.82 }}
+                    onClick={async () => { await updateGroup(groupId, { emoji: e }); setShowEmojiPicker(false) }}
+                    className="aspect-square rounded-xl text-2xl flex items-center justify-center"
+                    style={{
+                      background: group.emoji === e ? 'rgba(123,97,255,0.25)' : 'rgba(44,44,46,0.8)',
+                      border: `1.5px solid ${group.emoji === e ? 'rgba(123,97,255,0.6)' : 'rgba(255,255,255,0.07)'}`,
+                    }}>
+                    {e}
+                  </motion.button>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Header */}
       <div className="relative">
         <div className="h-32 relative overflow-hidden"
           style={{ background: 'linear-gradient(135deg, rgba(123,97,255,0.25), rgba(0,217,255,0.12))' }}>
@@ -303,12 +346,24 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
           </motion.button>
         </div>
 
-        {/* Group info overlapping banner */}
+        {/* Group info */}
         <div className="px-5 -mt-8 relative z-10 flex items-end gap-4 mb-4">
-          <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl flex-shrink-0 border-2 border-[#0A0A0B]"
-            style={{ background: 'rgba(28,28,30,0.95)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+          <motion.div
+            whileTap={isCreator ? { scale: 0.92 } : {}}
+            onClick={isCreator ? () => setShowEmojiPicker(true) : undefined}
+            className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl flex-shrink-0 border-2 border-[#0A0A0B] relative"
+            style={{
+              background: 'rgba(28,28,30,0.95)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              cursor: isCreator ? 'pointer' : 'default',
+            }}>
             {group.emoji}
-          </div>
+            {isCreator && (
+              <div className="absolute -bottom-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#7B61FF] border-2 border-[#0A0A0B] flex items-center justify-center">
+                <Pencil size={8} className="text-white" />
+              </div>
+            )}
+          </motion.div>
           <div className="pb-1 flex-1 min-w-0">
             {editing ? (
               <input autoFocus value={editName} onChange={e => setEditName(e.target.value)}
@@ -403,9 +458,7 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-white truncate">
-                        {u.name}{isMe ? ' (Du)' : ''}
-                      </span>
+                      <span className="text-sm font-bold text-white truncate">{u.name}{isMe ? ' (Du)' : ''}</span>
                       {isCreatorMember && <Crown size={11} className="text-[#FF9F43] flex-shrink-0" />}
                       {isToday && (
                         <span className="text-[9px] font-black text-white px-1.5 py-0.5 rounded-full flex-shrink-0"
@@ -474,19 +527,14 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
               const label  = i === 0 ? 'Heute' : i === 1 ? 'Morgen'
                 : date.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })
               return (
-                <div key={i}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
+                <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
                   style={{
                     background: i === 0 ? 'rgba(123,97,255,0.12)' : 'rgba(20,20,21,0.9)',
                     border: `1px solid ${i === 0 ? 'rgba(123,97,255,0.25)' : 'rgba(255,255,255,0.04)'}`,
                   }}>
                   <UserAvatar user={u} size={30} />
-                  <span className={`flex-1 text-sm font-semibold ${i === 0 ? 'text-white' : 'text-[#8E8E93]'}`}>
-                    {u?.name ?? '?'}
-                  </span>
-                  <span className={`text-xs font-bold ${i === 0 ? 'text-[#7B61FF]' : 'text-[#3A3A3C]'}`}>
-                    {label}
-                  </span>
+                  <span className={`flex-1 text-sm font-semibold ${i === 0 ? 'text-white' : 'text-[#8E8E93]'}`}>{u?.name ?? '?'}</span>
+                  <span className={`text-xs font-bold ${i === 0 ? 'text-[#7B61FF]' : 'text-[#3A3A3C]'}`}>{label}</span>
                   {i === 0 && <div className="w-2 h-2 rounded-full bg-[#7B61FF] flex-shrink-0" />}
                 </div>
               )
@@ -562,12 +610,14 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
 // ── Group chat ────────────────────────────────────────────────────────────────
 function GroupChat({ groupId, onBack }) {
   const { groups, me, getUser, fetchGroupMessages, sendGroupMessage } = useApp()
-  const toast   = useToast()
-  const group   = groups.find(g => g.id === groupId)
-  const [messages, setMessages] = useState([])
-  const [text,     setText]     = useState('')
-  const [loading,  setLoading]  = useState(true)
-  const [sending,  setSending]  = useState(false)
+  const toast    = useToast()
+  const group    = groups.find(g => g.id === groupId)
+  const [messages,         setMessages]         = useState([])
+  const [text,             setText]             = useState('')
+  const [loading,          setLoading]          = useState(true)
+  const [sending,          setSending]          = useState(false)
+  const [replyTo,          setReplyTo]          = useState(null)   // { id, text, from_name }
+  const [showReactionFor,  setShowReactionFor]  = useState(null)   // message id
   const bottomRef = useRef(null)
   const inputRef  = useRef(null)
 
@@ -593,25 +643,39 @@ function GroupChat({ groupId, onBack }) {
   const handleSend = async () => {
     const trimmed = text.trim()
     if (!trimmed || sending) return
-    setSending(true); setText('')
+    const currentReplyTo = replyTo
+    setSending(true); setText(''); setReplyTo(null)
     try {
-      const msg = await sendGroupMessage(groupId, trimmed)
+      const msg = await sendGroupMessage(groupId, trimmed, currentReplyTo?.id ?? null)
       if (msg) {
         setMessages(p => [...p, msg])
         setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
       }
     } catch (err) {
       setText(trimmed)
+      setReplyTo(currentReplyTo)
       toast?.show(err.message || 'Senden fehlgeschlagen.', 'error')
     }
     setSending(false)
     inputRef.current?.focus()
   }
 
+  const handleReact = async (msgId, emoji) => {
+    setShowReactionFor(null)
+    try {
+      const { reactions } = await api.groups.reactMessage(groupId, msgId, emoji)
+      if (reactions) setMessages(p => p.map(m => m.id === msgId ? { ...m, reactions } : m))
+    } catch {}
+  }
+
+  const handleMsgTap = msgId => {
+    setShowReactionFor(p => p === msgId ? null : msgId)
+  }
+
   if (!group) { onBack(); return null }
 
   let lastSenderId = null
-  let lastDate = null
+  let lastDate     = null
 
   return (
     <motion.div key="chat" {...fwd} className="flex flex-col h-screen" style={{ background: '#0A0A0B' }}>
@@ -638,7 +702,8 @@ function GroupChat({ groupId, onBack }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-0.5"
+        onClick={() => setShowReactionFor(null)}>
         {loading && (
           <div className="flex justify-center py-12">
             <div className="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin"
@@ -662,6 +727,7 @@ function GroupChat({ groupId, onBack }) {
           const showDate   = msgDate !== lastDate
           lastSenderId     = msg.user_id
           lastDate         = msgDate
+          const isActive   = showReactionFor === msg.id
 
           return (
             <div key={msg.id}>
@@ -673,6 +739,7 @@ function GroupChat({ groupId, onBack }) {
                   </span>
                 </div>
               )}
+
               <div className={`flex items-end gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'} mb-0.5`}>
                 {!isMe && showName
                   ? <UserAvatar user={sender} size={28} />
@@ -683,21 +750,115 @@ function GroupChat({ groupId, onBack }) {
                   {showName && (
                     <span className="text-[11px] text-[#8E8E93] mb-1 px-1 font-semibold">{senderName}</span>
                   )}
-                  <div className="px-4 py-2.5 rounded-2xl text-sm text-white leading-snug break-words"
+
+                  {/* Bubble */}
+                  <motion.div
+                    whileTap={{ scale: 0.97 }}
+                    onClick={e => { e.stopPropagation(); handleMsgTap(msg.id) }}
+                    className="px-4 py-2.5 rounded-2xl text-sm text-white leading-snug break-words cursor-pointer select-none"
                     style={isMe
-                      ? { background: 'linear-gradient(135deg, #7B61FF, #9B7BFF)', borderBottomRightRadius: 6 }
-                      : { background: 'rgba(28,28,30,0.9)', border: '1px solid rgba(255,255,255,0.06)', borderBottomLeftRadius: 6 }
+                      ? { background: isActive ? 'linear-gradient(135deg, #9B7BFF, #7B61FF)' : 'linear-gradient(135deg, #7B61FF, #9B7BFF)', borderBottomRightRadius: 6 }
+                      : { background: isActive ? 'rgba(44,44,46,0.95)' : 'rgba(28,28,30,0.9)', border: '1px solid rgba(255,255,255,0.06)', borderBottomLeftRadius: 6 }
                     }>
+
+                    {/* Reply preview */}
+                    {msg.replyTo && (
+                      <div className="rounded-lg px-2.5 py-1.5 mb-2 -mx-0.5"
+                        style={{
+                          background: isMe ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.15)',
+                          borderLeft: '2.5px solid rgba(255,255,255,0.35)',
+                        }}>
+                        <p className="text-[10px] font-bold text-white/70 mb-0.5 truncate">{msg.replyTo.from_name}</p>
+                        <p className="text-[11px] text-white/55 truncate">{msg.replyTo.text}</p>
+                      </div>
+                    )}
                     {msg.text}
-                  </div>
+                  </motion.div>
+
+                  {/* Timestamp */}
                   <span className="text-[10px] text-[#3A3A3C] mt-1 px-1">{formatTime(msg.created_at)}</span>
+
+                  {/* Reactions display */}
+                  {msg.reactions?.length > 0 && (
+                    <div className={`flex flex-wrap gap-1 mt-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                      {msg.reactions.map(r => (
+                        <motion.button key={r.emoji} whileTap={{ scale: 0.85 }}
+                          onClick={e => { e.stopPropagation(); handleReact(msg.id, r.emoji) }}
+                          className="flex items-center gap-1 rounded-full px-2 py-0.5"
+                          style={{
+                            background: r.mine ? 'rgba(123,97,255,0.3)' : 'rgba(28,28,30,0.95)',
+                            border: `1px solid ${r.mine ? 'rgba(123,97,255,0.55)' : 'rgba(255,255,255,0.08)'}`,
+                          }}>
+                          <span className="text-sm leading-none">{r.emoji}</span>
+                          <span className="text-[10px] font-bold text-white">{r.count}</span>
+                        </motion.button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
+
+              {/* Reaction / reply picker */}
+              <AnimatePresence>
+                {isActive && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.88, y: -6 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.88, y: -6 }}
+                    transition={{ duration: 0.16 }}
+                    onClick={e => e.stopPropagation()}
+                    className={`flex items-center gap-1.5 mb-2 ${isMe ? 'justify-end pr-2' : 'justify-start pl-10'}`}>
+                    <div className="flex items-center gap-1 p-1.5 rounded-2xl"
+                      style={{ background: 'rgba(28,28,30,0.98)', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+                      {REACTION_EMOJIS.map(e => (
+                        <motion.button key={e} whileTap={{ scale: 0.75 }}
+                          onClick={() => handleReact(msg.id, e)}
+                          className="w-9 h-9 rounded-full flex items-center justify-center text-xl hover:bg-white/10 transition-colors">
+                          {e}
+                        </motion.button>
+                      ))}
+                      {/* Reply button */}
+                      <div className="w-px h-6 bg-white/10 mx-0.5" />
+                      <motion.button whileTap={{ scale: 0.75 }}
+                        onClick={() => {
+                          setReplyTo({ id: msg.id, text: msg.text, from_name: senderName })
+                          setShowReactionFor(null)
+                          setTimeout(() => inputRef.current?.focus(), 50)
+                        }}
+                        className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors">
+                        <CornerUpLeft size={15} className="text-[#8E8E93]" />
+                      </motion.button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           )
         })}
         <div ref={bottomRef} />
       </div>
+
+      {/* Reply context bar */}
+      <AnimatePresence>
+        {replyTo && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+            className="flex items-center gap-2.5 px-4 py-2.5 flex-shrink-0"
+            style={{
+              background: 'rgba(28,28,30,0.98)',
+              borderTop: '1px solid rgba(123,97,255,0.25)',
+            }}>
+            <CornerUpLeft size={13} className="text-[#7B61FF] flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] text-[#7B61FF] font-bold mb-0.5">{replyTo.from_name}</p>
+              <p className="text-[11px] text-[#8E8E93] truncate">{replyTo.text}</p>
+            </div>
+            <motion.button whileTap={{ scale: 0.85 }} onClick={() => setReplyTo(null)}>
+              <X size={14} className="text-[#8E8E93]" />
+            </motion.button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Input */}
       <div className="flex-shrink-0 px-4 py-3 pb-8 flex items-center gap-2.5"
@@ -713,7 +874,7 @@ function GroupChat({ groupId, onBack }) {
             value={text}
             onChange={e => setText(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
-            placeholder="Nachricht an die Gruppe…"
+            placeholder={replyTo ? 'Antworten…' : 'Nachricht an die Gruppe…'}
             maxLength={500}
             className="w-full bg-transparent text-white placeholder-[#3A3A3C] text-sm outline-none"
             style={{ caretColor: '#7B61FF' }}
@@ -817,7 +978,8 @@ export default function GroupView({ onReveal }) {
       {screen === 'list' && (
         <GroupList key="list"
           onSelect={id => { setGroupId(id); setScreen('detail') }}
-          onCreate={() => setScreen('create')} />
+          onCreate={() => setScreen('create')}
+          onOpenChat={id => { setGroupId(id); setScreen('chat') }} />
       )}
       {screen === 'create' && (
         <CreateGroup key="create"

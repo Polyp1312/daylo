@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Bell, Video, Users, Home, Play, User, MessageCircle,
   Clock, Zap, Sparkles, Camera, QrCode, X, Plus,
   Check, CheckCircle, UserPlus, ChevronLeft, Trash2, Send, Flame, Heart, Star,
-  MessageSquare, Pause, Volume2, VolumeX,
+  MessageSquare, Pause, Volume2, VolumeX, Trophy,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 
@@ -51,6 +51,63 @@ const page = {
 }
 
 const REACTION_TYPES = ['👍', '❤️', '😂']
+
+// ── Animated number (counts up on mount) ─────────────────────────────────────
+function AnimatedNumber({ value, duration = 0.8, className, style }) {
+  const [displayed, setDisplayed] = useState(0)
+  useEffect(() => {
+    if (value === 0) { setDisplayed(0); return }
+    const start = Date.now()
+    const raf = () => {
+      const t = Math.min((Date.now() - start) / (duration * 1000), 1)
+      const eased = 1 - Math.pow(1 - t, 3)
+      setDisplayed(Math.round(eased * value))
+      if (t < 1) requestAnimationFrame(raf)
+    }
+    requestAnimationFrame(raf)
+  }, [value, duration])
+  return <span className={className} style={style}>{displayed}</span>
+}
+
+// ── Confetti burst ────────────────────────────────────────────────────────────
+function GoalConfetti({ active }) {
+  const particles = useMemo(() =>
+    Array.from({ length: 56 }, (_, i) => ({
+      id: i,
+      x: 5 + Math.random() * 90,
+      delay: Math.random() * 1.8,
+      dur: 2.4 + Math.random() * 2,
+      color: ['#7B61FF','#00D9FF','#FF9F43','#2ECC71','#FF6B9D','#FFD93D','#FF453A','#BF5AF2'][i % 8],
+      size: 5 + Math.random() * 7,
+      circle: Math.random() > 0.55,
+      spin: 200 + Math.random() * 560,
+    }))
+  , [])
+
+  return (
+    <AnimatePresence>
+      {active && (
+        <div className="fixed inset-0 pointer-events-none z-[90] overflow-hidden">
+          {particles.map(p => (
+            <motion.div
+              key={p.id}
+              initial={{ x: `${p.x}vw`, y: '-6vh', rotate: 0, opacity: 1 }}
+              animate={{ y: '108vh', rotate: p.spin, opacity: [1, 1, 1, 0] }}
+              transition={{ duration: p.dur, delay: p.delay, ease: 'linear' }}
+              style={{
+                position:     'absolute',
+                width:        p.size,
+                height:       p.circle ? p.size : p.size * 0.55,
+                background:   p.color,
+                borderRadius: p.circle ? '50%' : 2,
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </AnimatePresence>
+  )
+}
 
 // ── QR Modal ───────────────────────────────────────────────────────────────────
 function QRModal({ onClose }) {
@@ -813,6 +870,17 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
   const meFormatted   = { avatar: avatarUrl(user?.avatar), initials: username.slice(0, 2).toUpperCase(), color: '#7B61FF' }
   const greeting      = timeGreeting()
 
+  // Konfetti: einmalig auslösen wenn Tagesziel zuerst erreicht wird
+  const [confetti,    setConfetti]    = useState(false)
+  const [celebrated,  setCelebrated]  = useState(false)
+  useEffect(() => {
+    if (todayProgress >= 100 && !celebrated) {
+      setCelebrated(true)
+      setConfetti(true)
+      setTimeout(() => setConfetti(false), 5500)
+    }
+  }, [todayProgress, celebrated])
+
   const isOnline = id => {
     const t = presences[id]
     return t && Date.now() - t < 3 * 60 * 1000
@@ -851,11 +919,22 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
         <div className="flex items-center gap-2.5">
           {myStreak > 0 && (
             <motion.div
-              initial={{ scale: 0.8, opacity: 0 }}
+              initial={{ scale: 0.6, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className="flex items-center gap-1 bg-[#FF9F43]/15 border border-[#FF9F43]/30 px-2.5 py-1.5 rounded-full">
-              <Flame size={12} className="text-[#FF9F43]" />
-              <span className="text-[#FF9F43] text-xs font-bold">{myStreak}</span>
+              transition={{ type: 'spring', damping: 12, stiffness: 260, delay: 0.15 }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full"
+              style={{
+                background:  'rgba(255,159,67,0.15)',
+                border:      '1px solid rgba(255,159,67,0.35)',
+                boxShadow:   '0 0 12px rgba(255,159,67,0.2)',
+              }}>
+              <motion.span
+                animate={{ rotate: [0, -12, 12, -8, 8, 0] }}
+                transition={{ duration: 0.8, delay: 0.5 }}>
+                <Flame size={13} className="text-[#FF9F43]" />
+              </motion.span>
+              <AnimatedNumber value={myStreak} duration={0.6}
+                className="text-[#FF9F43] text-xs font-black tabular-nums" />
             </motion.div>
           )}
           <motion.button whileTap={{ scale: 0.88 }} onClick={onShowQR}
@@ -1016,58 +1095,119 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
         </motion.div>
       </div>
 
-      {/* ── My progress ── */}
+      {/* ── Konfetti ── */}
+      <GoalConfetti active={confetti} />
+
+      {/* ── My progress / Goal celebration ── */}
       {activeGroup && (
         <div className="px-5 mb-4">
-          <div className="rounded-3xl bg-[#141415] border border-[#1C1C1E] p-5"
-            style={{ background: 'linear-gradient(135deg, #141415 0%, #0F0F12 100%)' }}>
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm font-bold text-white">Mein Fortschritt</span>
-              <div className="flex items-center gap-2">
-                {hasUploadedToday && (
-                  <span className="text-[11px] text-[#2ECC71] font-bold bg-[#2ECC71]/10 px-2.5 py-1 rounded-full border border-[#2ECC71]/20">
-                    Heute ✓
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-5">
-              <div className="relative flex-shrink-0" style={{ width: 100, height: 100 }}>
-                <ProgressRing progress={todayProgress} size={100} strokeWidth={6} />
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-[22px] font-bold text-white leading-none">{Math.round(todayDuration)}</span>
-                  <span className="text-[11px] text-[#8E8E93]">/ 60s</span>
-                </div>
-              </div>
-              <div className="flex-1 space-y-3">
-                {[
-                  { label: 'Aufgenommen', val: `${Math.round(todayDuration)}s`,  color: '#fff'      },
-                  { label: 'Verbleibend', val: `${Math.round(todayRemaining)}s`, color: '#7B61FF'   },
-                  { label: 'Reset um',    val: '00:00 Uhr',                      color: '#00D9FF'   },
-                ].map(r => (
-                  <div key={r.label} className="flex items-center justify-between">
-                    <span className="text-xs text-[#8E8E93]">{r.label}</span>
-                    <span className="text-sm font-bold" style={{ color: r.color }}>{r.val}</span>
-                  </div>
-                ))}
-                <div className="h-px bg-[#2C2C2E]" />
-                <div className="flex items-center gap-1.5">
-                  <Sparkles size={11} className="text-[#FF9F43]" />
-                  <span className="text-xs text-[#FF9F43] font-semibold">KI-Schnitt aktiv</span>
-                </div>
-              </div>
-            </div>
+          <AnimatePresence mode="wait">
+            {todayProgress >= 100 ? (
+              /* ── Feier-Karte ── */
+              <motion.div key="celebration"
+                initial={{ scale: 0.92, opacity: 0 }}
+                animate={{ scale: 1,    opacity: 1 }}
+                exit={{    scale: 0.92, opacity: 0 }}
+                transition={{ type: 'spring', damping: 18, stiffness: 260 }}
+                className="rounded-3xl p-5 relative overflow-hidden"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(46,204,113,0.18) 0%, rgba(0,217,255,0.12) 100%)',
+                  border:     '1px solid rgba(46,204,113,0.3)',
+                }}>
+                {/* Ambient glow */}
+                <div className="absolute -top-8 -right-8 w-40 h-40 rounded-full blur-3xl pointer-events-none"
+                  style={{ background: 'rgba(46,204,113,0.25)' }} />
 
-            {/* Mini progress bar */}
-            <div className="mt-4 h-1.5 rounded-full bg-[#2C2C2E] overflow-hidden">
-              <motion.div
-                className="h-full rounded-full"
-                style={{ background: 'linear-gradient(90deg, #7B61FF, #00D9FF)' }}
-                animate={{ width: `${todayProgress}%` }}
-                transition={{ duration: 0.5, ease: 'easeOut' }}
-              />
-            </div>
-          </div>
+                <div className="relative flex items-center gap-4">
+                  <motion.div
+                    initial={{ scale: 0, rotate: -20 }}
+                    animate={{ scale: 1, rotate: 0 }}
+                    transition={{ type: 'spring', damping: 11, stiffness: 220, delay: 0.1 }}
+                    className="w-16 h-16 rounded-2xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background:  'linear-gradient(135deg, #2ECC71, #00D9FF)',
+                      boxShadow:   '0 0 32px rgba(46,204,113,0.5)',
+                    }}>
+                    <Trophy size={28} className="text-white" />
+                  </motion.div>
+
+                  <div className="flex-1">
+                    <p className="text-white font-black text-lg leading-tight">Tagesziel erreicht! 🎉</p>
+                    <p className="text-[#2ECC71] text-sm font-bold mt-0.5">60 Sekunden aufgenommen</p>
+                    {myStreak > 0 && (
+                      <motion.p
+                        initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.3 }}
+                        className="text-[#FF9F43] text-xs font-semibold mt-1 flex items-center gap-1">
+                        <Flame size={12} /> {myStreak} Tage Streak — weiter so!
+                      </motion.p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Completed bar */}
+                <div className="mt-4 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(46,204,113,0.15)' }}>
+                  <motion.div className="h-full rounded-full"
+                    style={{ background: 'linear-gradient(90deg, #2ECC71, #00D9FF)' }}
+                    initial={{ width: '0%' }}
+                    animate={{ width: '100%' }}
+                    transition={{ duration: 0.9, ease: 'easeOut', delay: 0.2 }} />
+                </div>
+              </motion.div>
+            ) : (
+              /* ── Normal progress card ── */
+              <motion.div key="progress"
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="rounded-3xl p-5"
+                style={{ background: 'linear-gradient(135deg, #141415 0%, #0F0F12 100%)', border: '1px solid rgba(255,255,255,0.05)' }}>
+
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-sm font-black text-white">Mein Fortschritt</span>
+                  {hasUploadedToday && (
+                    <span className="text-[11px] text-[#2ECC71] font-bold bg-[#2ECC71]/10 px-2.5 py-1 rounded-full border border-[#2ECC71]/20">
+                      Heute ✓
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-5">
+                  <div className="relative flex-shrink-0" style={{ width: 100, height: 100 }}>
+                    <ProgressRing progress={todayProgress} size={100} strokeWidth={6} />
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <AnimatedNumber value={Math.round(todayDuration)}
+                        className="text-[22px] font-black text-white leading-none" />
+                      <span className="text-[11px] text-[#8E8E93]">/ 60s</span>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 space-y-3">
+                    {[
+                      { label: 'Aufgenommen', val: `${Math.round(todayDuration)}s`,  color: '#fff'    },
+                      { label: 'Verbleibend', val: `${Math.round(todayRemaining)}s`, color: '#7B61FF' },
+                      { label: 'Reset um',    val: '00:00 Uhr',                      color: '#00D9FF' },
+                    ].map(r => (
+                      <div key={r.label} className="flex items-center justify-between">
+                        <span className="text-xs text-[#8E8E93]">{r.label}</span>
+                        <span className="text-sm font-bold" style={{ color: r.color }}>{r.val}</span>
+                      </div>
+                    ))}
+                    <div className="h-px bg-[#2C2C2E]" />
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles size={11} className="text-[#FF9F43]" />
+                      <span className="text-xs text-[#FF9F43] font-semibold">KI-Schnitt aktiv</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(44,44,46,0.8)' }}>
+                  <motion.div className="h-full rounded-full"
+                    style={{ background: 'linear-gradient(90deg, #7B61FF, #00D9FF)' }}
+                    animate={{ width: `${todayProgress}%` }}
+                    transition={{ duration: 0.6, ease: 'easeOut' }} />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       )}
 
@@ -1352,6 +1492,7 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false)
   const [revealTarget,      setRevealTarget]      = useState(null)
   const [revealInitialVlog, setRevealInitialVlog] = useState(null)
+  const [messageFriend,     setMessageFriend]     = useState(null)
 
   const [totalSecs, setTotalSecs] = useState(secsUntilMidnight)
   const countdown = secsToHMS(totalSecs)
@@ -1401,14 +1542,16 @@ export default function App() {
               onDone={vlog => { addVlog(vlog); navigate('home', 'dashboard') }} />
           )}
           {view === 'messages' && (
-            <MessagesView key="messages"
-              onFindFriends={() => navigate('profile', 'profile')} />
+            <MessagesView key={`messages-${messageFriend?.id ?? 'list'}`}
+              onFindFriends={() => navigate('profile', 'profile')}
+              initialFriend={messageFriend} />
           )}
           {view === 'group' && (
             <GroupView key="group" onReveal={openReveal} />
           )}
           {view === 'profile' && (
-            <ProfileView key="profile" onReveal={openReveal} />
+            <ProfileView key="profile" onReveal={openReveal}
+              onOpenMessage={friend => { setMessageFriend(friend); navigate('messages', 'messages') }} />
           )}
         </AnimatePresence>
 

@@ -136,6 +136,13 @@ db.exec(`
     read       INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS group_message_reactions (
+    message_id TEXT NOT NULL REFERENCES group_messages(id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    emoji      TEXT NOT NULL,
+    PRIMARY KEY (message_id, user_id, emoji)
+  );
 `)
 
 // ── Indexes ───────────────────────────────────────────────────────────────────
@@ -152,6 +159,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gmsgs_group     ON group_messages(group_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_messages_pair   ON messages(from_id, to_id);
   CREATE INDEX IF NOT EXISTS idx_messages_to     ON messages(to_id, read);
+  CREATE INDEX IF NOT EXISTS idx_gmsg_reactions  ON group_message_reactions(message_id);
 `)
 
 // ── Safe column migrations (idempotent) ───────────────────────────────────────
@@ -161,6 +169,12 @@ const migrations = [
   "ALTER TABLE vlogs ADD COLUMN status TEXT DEFAULT 'ready'",
   'ALTER TABLE vlogs ADD COLUMN processed_filename TEXT',
   'ALTER TABLE users ADD COLUMN avatar TEXT',
+  'ALTER TABLE group_messages ADD COLUMN reply_to_id TEXT',
+  'ALTER TABLE user_groups ADD COLUMN description TEXT',
+  'ALTER TABLE users ADD COLUMN bio TEXT',
+  "ALTER TABLE users ADD COLUMN notif_prefs TEXT DEFAULT '{}'",
+  'ALTER TABLE users ADD COLUMN searchable INTEGER DEFAULT 1',
+  'ALTER TABLE users ADD COLUMN color TEXT',
 ]
 for (const sql of migrations) {
   try { db.exec(sql) } catch { /* column already exists */ }

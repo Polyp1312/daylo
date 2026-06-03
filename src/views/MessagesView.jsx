@@ -398,8 +398,8 @@ function ConversationList({ onSelect, onFindFriends }) {
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
-export default function MessagesView({ onFindFriends }) {
-  const [selected, setSelected] = useState(null)
+export default function MessagesView({ onFindFriends, initialFriend }) {
+  const [selected, setSelected] = useState(initialFriend ?? null)
 
   return (
     <AnimatePresence mode="wait">
