@@ -11,8 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.104.1",
-    "@tailwindcss/vite": "^4.2.4",
+"@tailwindcss/vite": "^4.2.4",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.10.0",
     "express": "^5.2.1",

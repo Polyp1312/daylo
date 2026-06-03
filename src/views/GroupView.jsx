@@ -1,86 +1,152 @@
-// v3
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, Trash2, UserPlus, ChevronLeft, Users, Check, Pencil, X, Crown } from 'lucide-react'
+import { Plus, Trash2, UserPlus, ChevronLeft, Users, Check, Pencil, X, Crown, MessageCircle, Send, LogOut, Play } from 'lucide-react'
 import { useApp } from '../context/AppContext'
+import { useToast } from '../components/Toast'
+import UserAvatar from '../components/UserAvatar'
 
-const page = {
-  initial: { opacity: 0, x: 40 }, animate: { opacity: 1, x: 0 },
-  exit: { opacity: 0, x: -30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] },
-}
-const pageBack = {
-  initial: { opacity: 0, x: -40 }, animate: { opacity: 1, x: 0 },
-  exit: { opacity: 0, x: 30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] },
-}
+const fwd = { initial: { opacity: 0, x: 40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] } }
+const back = { initial: { opacity: 0, x: -40 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: 30 }, transition: { duration: 0.22, ease: [0.4, 0, 0.2, 1] } }
 
 const EMOJIS = ['🎬', '🎮', '🏋️', '🌍', '🎵', '🍕', '🏄', '⚽', '🎭', '🚀', '🎨', '📚', '🏕️', '🎯', '🌅', '🐉']
 
-// ── Avatar chip ─────────────────────────────────────────────────────────────
-function Avatar({ user, size = 10 }) {
-  return (
-    <div className={`w-${size} h-${size} rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0`}
-      style={{ background: `linear-gradient(135deg, ${user.color}, ${user.color}88)` }}>
-      {user.initials}
-    </div>
-  )
+function formatTime(ts) {
+  const d = new Date(ts)
+  const now = new Date()
+  if (d.toDateString() === now.toDateString())
+    return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' +
+         d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
 }
 
 // ── Group list ───────────────────────────────────────────────────────────────
 function GroupList({ onSelect, onCreate }) {
   const { groups, getUser } = useApp()
+  const totalUnread = groups.reduce((s, g) => s + (g.unreadCount ?? 0), 0)
 
   return (
-    <motion.div key="list" {...pageBack} className="min-h-screen bg-[#0A0A0B] pb-28">
+    <motion.div key="list" {...back} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
       <div className="flex items-center justify-between px-5 pt-14 pb-5">
-        <span className="text-[22px] font-bold text-white">Gruppen</span>
+        <div className="flex items-center gap-2.5">
+          <span className="text-[26px] font-black text-white tracking-tight">Gruppen</span>
+          {totalUnread > 0 && (
+            <div className="w-6 h-6 rounded-full bg-[#7B61FF] flex items-center justify-center shadow-lg"
+              style={{ boxShadow: '0 0 12px rgba(123,97,255,0.5)' }}>
+              <span className="text-[11px] text-white font-black">{Math.min(totalUnread, 9)}</span>
+            </div>
+          )}
+        </div>
         <motion.button whileTap={{ scale: 0.88 }} onClick={onCreate}
-          className="flex items-center gap-1.5 bg-[#7B61FF] px-3.5 py-2 rounded-full">
+          className="flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold"
+          style={{
+            background: 'linear-gradient(135deg, #7B61FF, #00D9FF)',
+            boxShadow: '0 0 16px rgba(123,97,255,0.4)',
+          }}>
           <Plus size={14} className="text-white" />
-          <span className="text-white text-sm font-semibold">Neu</span>
+          <span className="text-white">Neu</span>
         </motion.button>
       </div>
 
       {groups.length === 0 ? (
-        <div className="flex flex-col items-center justify-center px-8 pt-20 gap-3">
-          <div className="w-16 h-16 rounded-2xl bg-[#1C1C1E] flex items-center justify-center text-3xl">👥</div>
-          <p className="text-white font-semibold text-center">Noch keine Gruppe</p>
-          <p className="text-[#8E8E93] text-sm text-center">Erstelle eine Gruppe und lade Freunde ein.</p>
+        <div className="flex flex-col items-center justify-center px-8 pt-16 gap-4">
+          <div className="w-20 h-20 rounded-3xl bg-[#1C1C1E] flex items-center justify-center text-4xl"
+            style={{ boxShadow: '0 0 40px rgba(123,97,255,0.1)' }}>
+            👥
+          </div>
+          <div className="text-center">
+            <p className="text-white font-black text-base">Noch keine Gruppe</p>
+            <p className="text-[#8E8E93] text-sm mt-1">Erstelle eine Gruppe und lade deine Freunde ein.</p>
+          </div>
           <motion.button whileTap={{ scale: 0.96 }} onClick={onCreate}
-            className="mt-2 px-6 py-3 rounded-2xl font-semibold text-white"
-            style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
+            className="mt-1 px-6 py-3.5 rounded-2xl font-black text-white text-sm"
+            style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 24px rgba(123,97,255,0.4)' }}>
             Gruppe erstellen
           </motion.button>
         </div>
       ) : (
         <div className="px-5 space-y-3">
           {groups.map((g, i) => {
-            const today = getUser(g.rotation[g.todayIdx] ?? g.memberIds[0])
+            const todayUser = getUser(g.rotation[g.todayIdx % Math.max(g.rotation.length, 1)] ?? g.memberIds[0])
+            const hasUnread = (g.unreadCount ?? 0) > 0
+            // Show up to 3 member avatars
+            const previewMembers = g.memberIds.slice(0, 3).map(id => getUser(id)).filter(Boolean)
+
             return (
               <motion.div key={g.id}
-                initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.06 }}
                 whileTap={{ scale: 0.97 }}
                 onClick={() => onSelect(g.id)}
-                className="flex items-center gap-4 bg-[#141415] border border-[#2C2C2E] rounded-2xl p-4 cursor-pointer">
-                <div className="w-12 h-12 rounded-2xl bg-[#1C1C1E] flex items-center justify-center text-2xl flex-shrink-0">
-                  {g.emoji}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-white font-semibold truncate">{g.name}</p>
-                  <p className="text-xs text-[#8E8E93] mt-0.5">{g.memberIds.length} Mitglieder</p>
-                </div>
-                {today && (
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <div className="text-right">
-                      <p className="text-[10px] text-[#7B61FF] font-semibold">HEUTE</p>
-                      <p className="text-xs text-[#8E8E93]">{today.name}</p>
-                    </div>
-                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-xs"
-                      style={{ background: `linear-gradient(135deg, ${today.color}, ${today.color}88)` }}>
-                      {today.initials}
+                className="rounded-2xl p-4 cursor-pointer relative overflow-hidden"
+                style={{
+                  background: hasUnread
+                    ? 'linear-gradient(135deg, rgba(123,97,255,0.12), rgba(0,217,255,0.06))'
+                    : 'rgba(20,20,21,0.9)',
+                  border: `1px solid ${hasUnread ? 'rgba(123,97,255,0.35)' : 'rgba(255,255,255,0.06)'}`,
+                }}>
+
+                {/* Glow for unread */}
+                {hasUnread && (
+                  <div className="absolute -top-8 -right-8 w-32 h-32 rounded-full blur-3xl pointer-events-none"
+                    style={{ background: 'rgba(123,97,255,0.25)' }} />
+                )}
+
+                <div className="relative flex items-center gap-3.5">
+                  {/* Group emoji */}
+                  <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl flex-shrink-0 relative"
+                    style={{
+                      background: hasUnread ? 'rgba(123,97,255,0.2)' : 'rgba(28,28,30,0.8)',
+                      border: `1.5px solid ${hasUnread ? 'rgba(123,97,255,0.4)' : 'rgba(255,255,255,0.07)'}`,
+                    }}>
+                    {g.emoji}
+                    {hasUnread && (
+                      <div className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center border-2 border-[#0A0A0B]"
+                        style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
+                        <span className="text-[9px] text-white font-black">{Math.min(g.unreadCount, 9)}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <p className="font-black text-white text-base truncate">{g.name}</p>
+                    {hasUnread ? (
+                      <p className="text-xs font-bold mt-0.5" style={{ color: '#7B61FF' }}>
+                        {g.unreadCount} neue {g.unreadCount === 1 ? 'Nachricht' : 'Nachrichten'}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-[#8E8E93] mt-0.5">{g.memberIds.length} Mitglieder</p>
+                    )}
+
+                    {/* Member avatar stack */}
+                    <div className="flex items-center gap-[-6px] mt-2">
+                      {previewMembers.map((m, idx) => (
+                        <div key={m.id} className="rounded-full border-2 border-[#0A0A0B]"
+                          style={{ marginLeft: idx > 0 ? -8 : 0, zIndex: previewMembers.length - idx }}>
+                          <UserAvatar user={m} size={20} />
+                        </div>
+                      ))}
+                      {g.memberIds.length > 3 && (
+                        <div className="w-5 h-5 rounded-full bg-[#2C2C2E] flex items-center justify-center border-2 border-[#0A0A0B]"
+                          style={{ marginLeft: -8 }}>
+                          <span className="text-[8px] text-[#8E8E93] font-bold">+{g.memberIds.length - 3}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
-                )}
+
+                  {/* Today indicator */}
+                  {todayUser && !hasUnread && (
+                    <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                      <div className="relative">
+                        <UserAvatar user={todayUser} size={36} />
+                        <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#7B61FF] border-2 border-[#0A0A0B] flex items-center justify-center">
+                          <span className="text-[7px] text-white font-black">▶</span>
+                        </div>
+                      </div>
+                      <span className="text-[9px] font-black text-[#7B61FF] uppercase tracking-wide">Heute</span>
+                    </div>
+                  )}
+                </div>
               </motion.div>
             )
           })}
@@ -93,7 +159,7 @@ function GroupList({ onSelect, onCreate }) {
 // ── Create group ─────────────────────────────────────────────────────────────
 function CreateGroup({ onBack, onCreated }) {
   const { createGroup } = useApp()
-  const [name, setName] = useState('')
+  const [name,  setName]  = useState('')
   const [emoji, setEmoji] = useState('🎬')
 
   const submit = async () => {
@@ -103,52 +169,66 @@ function CreateGroup({ onBack, onCreated }) {
   }
 
   return (
-    <motion.div key="create" {...page} className="min-h-screen bg-[#0A0A0B] pb-28">
+    <motion.div key="create" {...fwd} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
       <div className="flex items-center gap-3 px-5 pt-14 pb-6">
         <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
           className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
           <ChevronLeft size={18} className="text-white" />
         </motion.button>
-        <span className="text-lg font-bold text-white">Neue Gruppe</span>
+        <span className="text-xl font-black text-white">Neue Gruppe</span>
       </div>
 
-      {/* Emoji picker */}
+      {/* Preview */}
+      <div className="flex justify-center mb-8">
+        <div className="w-24 h-24 rounded-3xl flex items-center justify-center text-5xl"
+          style={{
+            background: 'linear-gradient(135deg, rgba(123,97,255,0.2), rgba(0,217,255,0.15))',
+            border: '1.5px solid rgba(123,97,255,0.3)',
+            boxShadow: '0 0 40px rgba(123,97,255,0.2)',
+          }}>
+          {emoji}
+        </div>
+      </div>
+
       <div className="px-5 mb-5">
-        <p className="text-xs text-[#8E8E93] font-semibold uppercase tracking-wider mb-3">Emoji</p>
+        <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-3">Emoji wählen</p>
         <div className="grid grid-cols-8 gap-2">
           {EMOJIS.map(e => (
-            <motion.button key={e} whileTap={{ scale: 0.85 }} onClick={() => setEmoji(e)}
-              className={`aspect-square rounded-xl text-xl flex items-center justify-center transition-colors ${
-                emoji === e ? 'bg-[#7B61FF]/30 ring-2 ring-[#7B61FF]' : 'bg-[#1C1C1E]'
-              }`}>
+            <motion.button key={e} whileTap={{ scale: 0.82 }} onClick={() => setEmoji(e)}
+              className="aspect-square rounded-xl text-2xl flex items-center justify-center transition-all"
+              style={{
+                background: emoji === e ? 'rgba(123,97,255,0.25)' : 'rgba(28,28,30,0.8)',
+                border: `1.5px solid ${emoji === e ? 'rgba(123,97,255,0.6)' : 'rgba(255,255,255,0.07)'}`,
+                boxShadow: emoji === e ? '0 0 12px rgba(123,97,255,0.3)' : 'none',
+              }}>
               {e}
             </motion.button>
           ))}
         </div>
       </div>
 
-      {/* Name input */}
       <div className="px-5 mb-6">
-        <p className="text-xs text-[#8E8E93] font-semibold uppercase tracking-wider mb-3">Name</p>
-        <div className="flex items-center gap-3 bg-[#1C1C1E] border border-[#2C2C2E] rounded-2xl px-4 py-3.5">
+        <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-3">Gruppenname</p>
+        <div className="flex items-center gap-3 rounded-2xl px-4 py-3.5"
+          style={{ background: 'rgba(28,28,30,0.9)', border: '1.5px solid rgba(255,255,255,0.07)' }}>
           <span className="text-2xl">{emoji}</span>
           <input
-            autoFocus
-            value={name}
-            onChange={e => setName(e.target.value)}
+            autoFocus value={name} onChange={e => setName(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && submit()}
-            placeholder="Gruppenname…"
-            maxLength={30}
-            className="flex-1 bg-transparent text-white placeholder-[#3A3A3C] text-base outline-none"
+            placeholder="Gruppenname…" maxLength={30}
+            className="flex-1 bg-transparent text-white placeholder-[#3A3A3C] text-base font-semibold outline-none"
+            style={{ caretColor: '#7B61FF' }}
           />
         </div>
       </div>
 
       <div className="px-5">
-        <motion.button whileTap={{ scale: 0.97 }} onClick={submit}
-          disabled={!name.trim()}
-          className="w-full py-4 rounded-2xl font-semibold text-white disabled:opacity-40"
-          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
+        <motion.button whileTap={{ scale: 0.97 }} onClick={submit} disabled={!name.trim()}
+          className="w-full py-4 rounded-2xl font-black text-white text-base disabled:opacity-40"
+          style={{
+            background: 'linear-gradient(135deg, #7B61FF, #00D9FF)',
+            boxShadow: name.trim() ? '0 0 24px rgba(123,97,255,0.4)' : 'none',
+          }}>
           Gruppe erstellen
         </motion.button>
       </div>
@@ -157,62 +237,133 @@ function CreateGroup({ onBack, onCreated }) {
 }
 
 // ── Group detail ─────────────────────────────────────────────────────────────
-function GroupDetail({ groupId, onBack, onAddMember }) {
-  const { groups, me, getUser, removeMember, deleteGroup, renameGroup } = useApp()
+function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
+  const { groups, me, getUser, removeMember, deleteGroup, renameGroup, presences } = useApp()
   const group = groups.find(g => g.id === groupId)
-  const [confirmRemove, setConfirmRemove] = useState(null) // userId to confirm remove
+  const [confirmRemove, setConfirmRemove] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [editing, setEditing] = useState(false)
-  const [editName, setEditName] = useState(group?.name ?? '')
-  const [copied, setCopied] = useState(false)
+  const [confirmLeave,  setConfirmLeave]  = useState(false)
+  const [editing,       setEditing]       = useState(false)
+  const [editName,      setEditName]      = useState(group?.name ?? '')
 
   if (!group) { onBack(); return null }
 
-  const todayUserId = group.rotation[group.todayIdx] ?? group.memberIds[0]
+  const isCreator   = group.creatorId === me?.id
+  const todayUserId = group.rotation[group.todayIdx % Math.max(group.rotation.length, 1)] ?? group.memberIds[0]
+  const hasUnread   = (group.unreadCount ?? 0) > 0
+
+  const isOnline = id => {
+    const t = presences?.[id]
+    return t && Date.now() - t < 3 * 60 * 1000
+  }
+
+  const daysUntilTurn = uid => {
+    const rotLen = group.rotation.length
+    if (!rotLen) return null
+    const pos = group.rotation.indexOf(uid)
+    if (pos === -1) return null
+    return ((pos - (group.todayIdx % rotLen) + rotLen) % rotLen)
+  }
 
   const saveEdit = async () => {
     if (editName.trim()) await renameGroup(groupId, editName.trim())
     setEditing(false)
   }
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(`DAYLO-${group.name.toUpperCase().replace(/\s/g, '').slice(0,6)}42`).catch(() => {})
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
   return (
-    <motion.div key={`detail-${groupId}`} {...page} className="min-h-screen bg-[#0A0A0B] pb-28">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-5 pt-14 pb-5">
-        <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
-          className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
-          <ChevronLeft size={18} className="text-white" />
-        </motion.button>
-        {editing ? (
-          <input autoFocus value={editName} onChange={e => setEditName(e.target.value)}
-            onBlur={saveEdit} onKeyDown={e => e.key === 'Enter' && saveEdit()}
-            className="flex-1 bg-[#1C1C1E] text-white font-bold text-lg px-3 py-1.5 rounded-xl outline-none border border-[#7B61FF]" />
-        ) : (
-          <div className="flex items-center gap-2 flex-1">
-            <span className="text-xl">{group.emoji}</span>
-            <span className="text-lg font-bold text-white truncate">{group.name}</span>
-            <motion.button whileTap={{ scale: 0.85 }} onClick={() => { setEditName(group.name); setEditing(true) }}>
-              <Pencil size={14} className="text-[#8E8E93]" />
-            </motion.button>
+    <motion.div key={`detail-${groupId}`} {...fwd} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
+
+      {/* Header with gradient */}
+      <div className="relative">
+        <div className="h-32 relative overflow-hidden"
+          style={{ background: 'linear-gradient(135deg, rgba(123,97,255,0.25), rgba(0,217,255,0.12))' }}>
+          <div className="absolute -top-8 -left-8 w-40 h-40 rounded-full blur-3xl"
+            style={{ background: 'rgba(123,97,255,0.3)' }} />
+        </div>
+
+        <div className="absolute top-0 inset-x-0 flex items-center justify-between px-5 pt-14">
+          <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
+            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(12px)' }}>
+            <ChevronLeft size={18} className="text-white" />
+          </motion.button>
+
+          <motion.button whileTap={{ scale: 0.88 }} onClick={onOpenChat}
+            className="relative w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{
+              background: hasUnread ? 'rgba(123,97,255,0.8)' : 'rgba(0,0,0,0.45)',
+              backdropFilter: 'blur(12px)',
+            }}>
+            <MessageCircle size={18} className="text-white" />
+            {hasUnread && (
+              <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 border-2 border-[#0A0A0B] flex items-center justify-center">
+                <span className="text-[8px] text-white font-black">{Math.min(group.unreadCount, 9)}</span>
+              </div>
+            )}
+          </motion.button>
+        </div>
+
+        {/* Group info overlapping banner */}
+        <div className="px-5 -mt-8 relative z-10 flex items-end gap-4 mb-4">
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl flex-shrink-0 border-2 border-[#0A0A0B]"
+            style={{ background: 'rgba(28,28,30,0.95)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+            {group.emoji}
           </div>
-        )}
+          <div className="pb-1 flex-1 min-w-0">
+            {editing ? (
+              <input autoFocus value={editName} onChange={e => setEditName(e.target.value)}
+                onBlur={saveEdit} onKeyDown={e => e.key === 'Enter' && saveEdit()}
+                className="w-full bg-[#1C1C1E] text-white font-black text-xl px-3 py-1.5 rounded-xl outline-none border border-[#7B61FF]" />
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-white font-black text-xl truncate">{group.name}</span>
+                {isCreator && (
+                  <motion.button whileTap={{ scale: 0.85 }} onClick={() => { setEditName(group.name); setEditing(true) }}>
+                    <Pencil size={13} className="text-[#8E8E93]" />
+                  </motion.button>
+                )}
+              </div>
+            )}
+            <p className="text-[#8E8E93] text-xs mt-0.5">{group.memberIds.length} Mitglieder</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Chat shortcut */}
+      <div className="px-5 mb-4">
+        <motion.button whileTap={{ scale: 0.98 }} onClick={onOpenChat}
+          className="w-full flex items-center gap-3 p-4 rounded-2xl"
+          style={{
+            background: hasUnread ? 'rgba(123,97,255,0.12)' : 'rgba(20,20,21,0.9)',
+            border: `1px solid ${hasUnread ? 'rgba(123,97,255,0.35)' : 'rgba(255,255,255,0.06)'}`,
+          }}>
+          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ background: hasUnread ? 'rgba(123,97,255,0.8)' : 'rgba(44,44,46,0.8)' }}>
+            <MessageCircle size={18} className="text-white" />
+          </div>
+          <div className="flex-1 text-left">
+            <p className="font-bold text-sm text-white">Gruppen-Chat</p>
+            {hasUnread
+              ? <p className="text-xs font-bold text-[#7B61FF] mt-0.5">{group.unreadCount} neue {group.unreadCount === 1 ? 'Nachricht' : 'Nachrichten'}</p>
+              : <p className="text-xs text-[#8E8E93] mt-0.5">Schreib deiner Gruppe</p>
+            }
+          </div>
+          <ChevronLeft size={16} className="text-[#8E8E93] rotate-180" />
+        </motion.button>
       </div>
 
       {/* Members */}
       <div className="px-5 mb-4">
         <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-semibold text-white">{group.memberIds.length} Mitglieder</span>
-          <motion.button whileTap={{ scale: 0.88 }} onClick={onAddMember}
-            className="flex items-center gap-1.5 bg-[#7B61FF]/15 border border-[#7B61FF]/30 px-3 py-1.5 rounded-full">
-            <UserPlus size={13} className="text-[#7B61FF]" />
-            <span className="text-xs text-[#7B61FF] font-semibold">Hinzufügen</span>
-          </motion.button>
+          <span className="text-sm font-black text-white">{group.memberIds.length} Mitglieder</span>
+          {isCreator && (
+            <motion.button whileTap={{ scale: 0.88 }} onClick={onAddMember}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold"
+              style={{ background: 'rgba(123,97,255,0.15)', border: '1px solid rgba(123,97,255,0.3)', color: '#7B61FF' }}>
+              <UserPlus size={12} />
+              Hinzufügen
+            </motion.button>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -220,55 +371,88 @@ function GroupDetail({ groupId, onBack, onAddMember }) {
             {group.memberIds.map((uid, i) => {
               const u = getUser(uid)
               if (!u) return null
-              const isMe = uid === me?.id
-              const isToday = uid === todayUserId
-              const isFirst = i === 0
+              const isMe            = uid === me?.id
+              const isToday         = uid === todayUserId
+              const isCreatorMember = uid === group.creatorId
+              const days            = daysUntilTurn(uid)
+              const online          = isOnline(uid)
 
               return (
-                <motion.div key={uid}
-                  layout
+                <motion.div key={uid} layout
                   initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -16, height: 0, marginBottom: 0 }}
                   transition={{ duration: 0.2 }}
-                  className={`flex items-center gap-3 p-3 rounded-2xl ${
-                    isToday ? 'bg-[#7B61FF]/10 border border-[#7B61FF]/25' : 'bg-[#1C1C1E]'
-                  }`}>
-
-                  <Avatar user={u} size={10} />
+                  className="flex items-center gap-3 p-3 rounded-2xl"
+                  style={{
+                    background: isToday
+                      ? 'linear-gradient(135deg, rgba(123,97,255,0.15), rgba(0,217,255,0.08))'
+                      : 'rgba(20,20,21,0.9)',
+                    border: `1px solid ${isToday ? 'rgba(123,97,255,0.3)' : 'rgba(255,255,255,0.05)'}`,
+                  }}>
+                  <div className="relative flex-shrink-0">
+                    <UserAvatar user={u} size={42} />
+                    {online && !isToday && (
+                      <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#2ECC71] border-2 border-[#0A0A0B]" />
+                    )}
+                    {isToday && (
+                      <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#7B61FF] border-2 border-[#0A0A0B] flex items-center justify-center">
+                        <span className="text-[7px] text-white font-black">▶</span>
+                      </div>
+                    )}
+                  </div>
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-white truncate">{u.name}{isMe ? ' (Du)' : ''}</span>
-                      {isFirst && <Crown size={12} className="text-[#FF9F43] flex-shrink-0" />}
-                      {isToday && <span className="text-[10px] bg-[#7B61FF] text-white px-1.5 py-0.5 rounded-full font-bold flex-shrink-0">HEUTE</span>}
+                      <span className="text-sm font-bold text-white truncate">
+                        {u.name}{isMe ? ' (Du)' : ''}
+                      </span>
+                      {isCreatorMember && <Crown size={11} className="text-[#FF9F43] flex-shrink-0" />}
+                      {isToday && (
+                        <span className="text-[9px] font-black text-white px-1.5 py-0.5 rounded-full flex-shrink-0"
+                          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
+                          HEUTE
+                        </span>
+                      )}
                     </div>
-                    <p className="text-xs text-[#8E8E93]">
-                      {isToday ? 'Nimmt heute auf' : `+${i}d in der Rotation`}
+                    <p className="text-xs text-[#8E8E93] mt-0.5">
+                      {isToday ? 'Nimmt heute auf'
+                        : days === null ? 'Nicht in Rotation'
+                        : days === 0 ? 'Heute dran'
+                        : days === 1 ? 'Morgen dran'
+                        : `In ${days} Tagen`}
                     </p>
                   </div>
 
-                  {!isMe && (
-                    confirmRemove === uid ? (
-                      <div className="flex items-center gap-2">
-                        <motion.button whileTap={{ scale: 0.88 }}
-                          onClick={async () => { await removeMember(groupId, uid); setConfirmRemove(null) }}
-                          className="w-8 h-8 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center">
-                          <Check size={13} className="text-red-400" />
-                        </motion.button>
-                        <motion.button whileTap={{ scale: 0.88 }}
-                          onClick={() => setConfirmRemove(null)}
-                          className="w-8 h-8 rounded-full bg-[#2C2C2E] flex items-center justify-center">
-                          <X size={13} className="text-[#8E8E93]" />
-                        </motion.button>
-                      </div>
-                    ) : (
-                      <motion.button whileTap={{ scale: 0.85 }}
-                        onClick={() => setConfirmRemove(uid)}
-                        className="w-8 h-8 rounded-full bg-[#2C2C2E] flex items-center justify-center">
-                        <Trash2 size={13} className="text-[#8E8E93]" />
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {onReveal && (
+                      <motion.button whileTap={{ scale: 0.85 }} onClick={() => onReveal(uid)}
+                        className="w-8 h-8 rounded-2xl flex items-center justify-center"
+                        style={{ background: 'rgba(123,97,255,0.2)', border: '1px solid rgba(123,97,255,0.3)' }}>
+                        <Play size={12} className="text-[#7B61FF] ml-0.5" fill="#7B61FF" />
                       </motion.button>
-                    )
-                  )}
+                    )}
+                    {isCreator && !isMe && (
+                      confirmRemove === uid ? (
+                        <div className="flex gap-1.5">
+                          <motion.button whileTap={{ scale: 0.88 }}
+                            onClick={async () => { await removeMember(groupId, uid); setConfirmRemove(null) }}
+                            className="w-8 h-8 rounded-full flex items-center justify-center"
+                            style={{ background: 'rgba(255,59,48,0.15)', border: '1px solid rgba(255,59,48,0.35)' }}>
+                            <Check size={12} className="text-red-400" />
+                          </motion.button>
+                          <motion.button whileTap={{ scale: 0.88 }} onClick={() => setConfirmRemove(null)}
+                            className="w-8 h-8 rounded-full bg-[#2C2C2E] flex items-center justify-center">
+                            <X size={12} className="text-[#8E8E93]" />
+                          </motion.button>
+                        </div>
+                      ) : (
+                        <motion.button whileTap={{ scale: 0.85 }} onClick={() => setConfirmRemove(uid)}
+                          className="w-8 h-8 rounded-full bg-[#1C1C1E] flex items-center justify-center">
+                          <Trash2 size={12} className="text-[#3A3A3C]" />
+                        </motion.button>
+                      )
+                    )}
+                  </div>
                 </motion.div>
               )
             })}
@@ -276,48 +460,271 @@ function GroupDetail({ groupId, onBack, onAddMember }) {
         </div>
       </div>
 
-      {/* Invite code */}
-      <div className="px-5 mb-4">
-        <div className="rounded-2xl bg-[#141415] border border-[#2C2C2E] p-4">
-          <p className="text-xs text-[#8E8E93] mb-2 font-semibold">Einladungscode</p>
-          <div className="flex items-center gap-3">
-            <div className="flex-1 bg-[#1C1C1E] rounded-xl px-3 py-2.5 font-mono text-white font-bold tracking-widest text-sm">
-              DAYLO-{group.name.toUpperCase().replace(/\s/g, '').slice(0, 6)}42
-            </div>
-            <motion.button whileTap={{ scale: 0.88 }} onClick={copyCode}
-              className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{ background: copied ? '#2ECC71' : '#7B61FF' }}>
-              {copied ? <Check size={16} className="text-white" /> : <Plus size={16} className="text-white rotate-45" />}
-            </motion.button>
+      {/* Rotation schedule */}
+      {group.rotation.length > 1 && (
+        <div className="px-5 mb-4">
+          <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-3">Rotationsplan</p>
+          <div className="space-y-2">
+            {Array.from({ length: Math.min(group.rotation.length, 14) }, (_, i) => {
+              const rotLen = group.rotation.length
+              const rotPos = (group.todayIdx % rotLen + i) % rotLen
+              const uid    = group.rotation[rotPos]
+              const u      = getUser(uid)
+              const date   = new Date(); date.setDate(date.getDate() + i)
+              const label  = i === 0 ? 'Heute' : i === 1 ? 'Morgen'
+                : date.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })
+              return (
+                <div key={i}
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
+                  style={{
+                    background: i === 0 ? 'rgba(123,97,255,0.12)' : 'rgba(20,20,21,0.9)',
+                    border: `1px solid ${i === 0 ? 'rgba(123,97,255,0.25)' : 'rgba(255,255,255,0.04)'}`,
+                  }}>
+                  <UserAvatar user={u} size={30} />
+                  <span className={`flex-1 text-sm font-semibold ${i === 0 ? 'text-white' : 'text-[#8E8E93]'}`}>
+                    {u?.name ?? '?'}
+                  </span>
+                  <span className={`text-xs font-bold ${i === 0 ? 'text-[#7B61FF]' : 'text-[#3A3A3C]'}`}>
+                    {label}
+                  </span>
+                  {i === 0 && <div className="w-2 h-2 rounded-full bg-[#7B61FF] flex-shrink-0" />}
+                </div>
+              )
+            })}
           </div>
+        </div>
+      )}
+
+      {/* Leave / Delete */}
+      <div className="px-5">
+        {!isCreator && (
+          confirmLeave ? (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="rounded-2xl p-4 mb-4"
+              style={{ background: 'rgba(255,149,0,0.08)', border: '1px solid rgba(255,149,0,0.25)' }}>
+              <p className="text-white font-bold text-sm mb-1">Gruppe wirklich verlassen?</p>
+              <p className="text-[#8E8E93] text-xs mb-4">Du kannst nur wieder beitreten wenn dich jemand einlädt.</p>
+              <div className="flex gap-2">
+                <motion.button whileTap={{ scale: 0.96 }}
+                  onClick={async () => { await removeMember(groupId, me.id); onBack() }}
+                  className="flex-1 py-3 rounded-xl bg-orange-500 text-white font-bold text-sm">
+                  Verlassen
+                </motion.button>
+                <motion.button whileTap={{ scale: 0.96 }} onClick={() => setConfirmLeave(false)}
+                  className="flex-1 py-3 rounded-xl bg-[#2C2C2E] text-white font-bold text-sm">
+                  Abbrechen
+                </motion.button>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.button whileTap={{ scale: 0.97 }} onClick={() => setConfirmLeave(true)}
+              className="w-full py-3.5 rounded-2xl flex items-center justify-center gap-2 mb-3"
+              style={{ border: '1px solid rgba(255,149,0,0.25)', background: 'rgba(255,149,0,0.06)' }}>
+              <LogOut size={14} className="text-orange-400" />
+              <span className="text-orange-400 font-bold text-sm">Gruppe verlassen</span>
+            </motion.button>
+          )
+        )}
+
+        {isCreator && (
+          confirmDelete ? (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="rounded-2xl p-4"
+              style={{ background: 'rgba(255,59,48,0.08)', border: '1px solid rgba(255,59,48,0.25)' }}>
+              <p className="text-white font-bold text-sm mb-1">Gruppe wirklich löschen?</p>
+              <p className="text-[#8E8E93] text-xs mb-4">Alle Nachrichten und Mitglieder werden entfernt.</p>
+              <div className="flex gap-2">
+                <motion.button whileTap={{ scale: 0.96 }}
+                  onClick={async () => { await deleteGroup(groupId); onBack() }}
+                  className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold text-sm">
+                  Löschen
+                </motion.button>
+                <motion.button whileTap={{ scale: 0.96 }} onClick={() => setConfirmDelete(false)}
+                  className="flex-1 py-3 rounded-xl bg-[#2C2C2E] text-white font-bold text-sm">
+                  Abbrechen
+                </motion.button>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.button whileTap={{ scale: 0.97 }} onClick={() => setConfirmDelete(true)}
+              className="w-full py-3.5 rounded-2xl flex items-center justify-center gap-2"
+              style={{ border: '1px solid rgba(255,59,48,0.2)', background: 'rgba(255,59,48,0.05)' }}>
+              <Trash2 size={14} className="text-red-400" />
+              <span className="text-red-400 font-bold text-sm">Gruppe löschen</span>
+            </motion.button>
+          )
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+// ── Group chat ────────────────────────────────────────────────────────────────
+function GroupChat({ groupId, onBack }) {
+  const { groups, me, getUser, fetchGroupMessages, sendGroupMessage } = useApp()
+  const toast   = useToast()
+  const group   = groups.find(g => g.id === groupId)
+  const [messages, setMessages] = useState([])
+  const [text,     setText]     = useState('')
+  const [loading,  setLoading]  = useState(true)
+  const [sending,  setSending]  = useState(false)
+  const bottomRef = useRef(null)
+  const inputRef  = useRef(null)
+
+  useEffect(() => {
+    setLoading(true)
+    fetchGroupMessages(groupId).then(msgs => {
+      setMessages(msgs ?? [])
+      setLoading(false)
+    })
+  }, [groupId])
+
+  useEffect(() => {
+    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+  }, [messages])
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      fetchGroupMessages(groupId).then(msgs => setMessages(msgs ?? []))
+    }, 5_000)
+    return () => clearInterval(t)
+  }, [groupId])
+
+  const handleSend = async () => {
+    const trimmed = text.trim()
+    if (!trimmed || sending) return
+    setSending(true); setText('')
+    try {
+      const msg = await sendGroupMessage(groupId, trimmed)
+      if (msg) {
+        setMessages(p => [...p, msg])
+        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+      }
+    } catch (err) {
+      setText(trimmed)
+      toast?.show(err.message || 'Senden fehlgeschlagen.', 'error')
+    }
+    setSending(false)
+    inputRef.current?.focus()
+  }
+
+  if (!group) { onBack(); return null }
+
+  let lastSenderId = null
+  let lastDate = null
+
+  return (
+    <motion.div key="chat" {...fwd} className="flex flex-col h-screen" style={{ background: '#0A0A0B' }}>
+
+      {/* Header */}
+      <div className="flex items-center gap-3 px-5 pt-14 pb-4 flex-shrink-0"
+        style={{
+          background: 'rgba(10,10,11,0.95)',
+          backdropFilter: 'blur(20px)',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+        }}>
+        <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
+          className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
+          <ChevronLeft size={18} className="text-white" />
+        </motion.button>
+        <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-xl flex-shrink-0"
+          style={{ background: 'rgba(28,28,30,0.9)', border: '1px solid rgba(255,255,255,0.07)' }}>
+          {group.emoji}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-white font-black truncate">{group.name}</p>
+          <p className="text-xs text-[#8E8E93] mt-0.5">{group.memberIds.length} Mitglieder</p>
         </div>
       </div>
 
-      {/* Delete group */}
-      <div className="px-5">
-        {confirmDelete ? (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-            className="rounded-2xl bg-red-500/10 border border-red-500/30 p-4">
-            <p className="text-white font-semibold text-sm mb-1">Gruppe wirklich löschen?</p>
-            <p className="text-[#8E8E93] text-xs mb-3">Diese Aktion kann nicht rückgängig gemacht werden.</p>
-            <div className="flex gap-2">
-              <motion.button whileTap={{ scale: 0.96 }} onClick={async () => { await deleteGroup(groupId); onBack() }}
-                className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-semibold text-sm">
-                Löschen
-              </motion.button>
-              <motion.button whileTap={{ scale: 0.96 }} onClick={() => setConfirmDelete(false)}
-                className="flex-1 py-2.5 rounded-xl bg-[#2C2C2E] text-white font-semibold text-sm">
-                Abbrechen
-              </motion.button>
-            </div>
-          </motion.div>
-        ) : (
-          <motion.button whileTap={{ scale: 0.97 }} onClick={() => setConfirmDelete(true)}
-            className="w-full py-3.5 rounded-2xl border border-red-500/30 flex items-center justify-center gap-2">
-            <Trash2 size={15} className="text-red-400" />
-            <span className="text-red-400 font-medium text-sm">Gruppe löschen</span>
-          </motion.button>
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
+        {loading && (
+          <div className="flex justify-center py-12">
+            <div className="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin"
+              style={{ borderColor: '#7B61FF', borderTopColor: 'transparent' }} />
+          </div>
         )}
+        {!loading && messages.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-16 gap-3">
+            <div className="text-5xl">{group.emoji}</div>
+            <p className="text-white font-black text-base">Noch keine Nachrichten</p>
+            <p className="text-[#8E8E93] text-sm text-center">Schreib die erste Nachricht!</p>
+          </div>
+        )}
+
+        {messages.map((msg, i) => {
+          const isMe       = msg.user_id === me?.id
+          const sender     = getUser(msg.user_id)
+          const senderName = msg.from_name ?? sender?.name ?? '?'
+          const showName   = !isMe && msg.user_id !== lastSenderId
+          const msgDate    = new Date(msg.created_at).toDateString()
+          const showDate   = msgDate !== lastDate
+          lastSenderId     = msg.user_id
+          lastDate         = msgDate
+
+          return (
+            <div key={msg.id}>
+              {showDate && (
+                <div className="flex justify-center my-5">
+                  <span className="text-[10px] text-[#8E8E93] px-3 py-1.5 rounded-full font-semibold"
+                    style={{ background: 'rgba(28,28,30,0.9)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    {new Date(msg.created_at).toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: 'long' })}
+                  </span>
+                </div>
+              )}
+              <div className={`flex items-end gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'} mb-0.5`}>
+                {!isMe && showName
+                  ? <UserAvatar user={sender} size={28} />
+                  : !isMe ? <div style={{ width: 28, flexShrink: 0 }} />
+                  : null}
+
+                <div className={`max-w-[76%] flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                  {showName && (
+                    <span className="text-[11px] text-[#8E8E93] mb-1 px-1 font-semibold">{senderName}</span>
+                  )}
+                  <div className="px-4 py-2.5 rounded-2xl text-sm text-white leading-snug break-words"
+                    style={isMe
+                      ? { background: 'linear-gradient(135deg, #7B61FF, #9B7BFF)', borderBottomRightRadius: 6 }
+                      : { background: 'rgba(28,28,30,0.9)', border: '1px solid rgba(255,255,255,0.06)', borderBottomLeftRadius: 6 }
+                    }>
+                    {msg.text}
+                  </div>
+                  <span className="text-[10px] text-[#3A3A3C] mt-1 px-1">{formatTime(msg.created_at)}</span>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <div className="flex-shrink-0 px-4 py-3 pb-8 flex items-center gap-2.5"
+        style={{
+          background: 'rgba(10,10,11,0.96)',
+          backdropFilter: 'blur(20px)',
+          borderTop: '1px solid rgba(255,255,255,0.06)',
+        }}>
+        <div className="flex-1 rounded-2xl px-4 py-3 focus-within:border-[#7B61FF]/60 transition-all"
+          style={{ background: 'rgba(28,28,30,0.9)', border: '1.5px solid rgba(255,255,255,0.07)' }}>
+          <input
+            ref={inputRef}
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
+            placeholder="Nachricht an die Gruppe…"
+            maxLength={500}
+            className="w-full bg-transparent text-white placeholder-[#3A3A3C] text-sm outline-none"
+            style={{ caretColor: '#7B61FF' }}
+          />
+        </div>
+        <motion.button whileTap={{ scale: 0.85 }} onClick={handleSend}
+          disabled={!text.trim() || sending}
+          className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 disabled:opacity-40"
+          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: text.trim() ? '0 0 16px rgba(123,97,255,0.5)' : 'none' }}>
+          <Send size={16} className="text-white" style={{ transform: 'translateX(1px)' }} />
+        </motion.button>
       </div>
     </motion.div>
   )
@@ -325,7 +732,7 @@ function GroupDetail({ groupId, onBack, onAddMember }) {
 
 // ── Add member ────────────────────────────────────────────────────────────────
 function AddMember({ groupId, onBack }) {
-  const { groups, getUser, friends, addMember } = useApp()
+  const { groups, friends, addMember } = useApp()
   const group = groups.find(g => g.id === groupId)
   const [added, setAdded] = useState([])
   const [query, setQuery] = useState('')
@@ -343,33 +750,32 @@ function AddMember({ groupId, onBack }) {
   }
 
   return (
-    <motion.div key="add-member" {...page} className="min-h-screen bg-[#0A0A0B] pb-28">
+    <motion.div key="add-member" {...fwd} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
       <div className="flex items-center gap-3 px-5 pt-14 pb-5">
         <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
           className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
           <ChevronLeft size={18} className="text-white" />
         </motion.button>
-        <span className="text-lg font-bold text-white">Mitglied hinzufügen</span>
+        <span className="text-xl font-black text-white">Mitglied hinzufügen</span>
       </div>
 
-      {/* Search */}
       <div className="px-5 mb-4">
-        <div className="flex items-center gap-3 bg-[#1C1C1E] border border-[#2C2C2E] rounded-2xl px-4 py-3">
+        <div className="flex items-center gap-3 rounded-2xl px-4 py-3.5"
+          style={{ background: 'rgba(28,28,30,0.9)', border: '1.5px solid rgba(255,255,255,0.07)' }}>
           <Users size={16} className="text-[#8E8E93] flex-shrink-0" />
-          <input value={query} onChange={e => setQuery(e.target.value)}
+          <input value={query} onChange={e => setQuery(e.target.value)} autoFocus
             placeholder="Freund suchen…"
-            className="flex-1 bg-transparent text-white placeholder-[#3A3A3C] text-sm outline-none" />
+            className="flex-1 bg-transparent text-white placeholder-[#3A3A3C] text-sm outline-none"
+            style={{ caretColor: '#7B61FF' }} />
         </div>
       </div>
 
-      <div className="px-5 space-y-2">
+      <div className="px-5 space-y-2.5">
         {eligible.length === 0 && (
           <div className="text-center py-10">
             <p className="text-[#8E8E93] text-sm">
-              {friends.length === 0
-                ? 'Füge zuerst Freunde hinzu.'
-                : query
-                ? 'Niemanden gefunden.'
+              {friends.length === 0 ? 'Füge zuerst Freunde hinzu.'
+                : query ? 'Niemanden gefunden.'
                 : 'Alle Freunde sind bereits in der Gruppe.'}
             </p>
           </div>
@@ -381,16 +787,15 @@ function AddMember({ groupId, onBack }) {
               <motion.div key={u.id}
                 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, x: 20 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-3 bg-[#141415] border border-[#2C2C2E] rounded-2xl p-3.5">
-                <Avatar user={u} size={11} />
-                <span className="text-sm font-semibold text-white flex-1">{u.name}</span>
-                <motion.button whileTap={{ scale: 0.88 }} onClick={() => handleAdd(u)}
-                  disabled={isAdded}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full font-semibold text-xs transition-colors ${
-                    isAdded
-                      ? 'bg-[#2ECC71]/20 border border-[#2ECC71]/40 text-[#2ECC71]'
-                      : 'bg-[#7B61FF] text-white'
-                  }`}>
+                className="flex items-center gap-3 rounded-2xl p-3.5"
+                style={{ background: 'rgba(20,20,21,0.9)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                <UserAvatar user={u} size={46} />
+                <span className="text-sm font-bold text-white flex-1">{u.name}</span>
+                <motion.button whileTap={{ scale: 0.88 }} onClick={() => handleAdd(u)} disabled={isAdded}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full font-bold text-xs"
+                  style={isAdded
+                    ? { background: 'rgba(46,204,113,0.15)', border: '1px solid rgba(46,204,113,0.3)', color: '#2ECC71' }
+                    : { background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', color: 'white' }}>
                   {isAdded ? <><Check size={12} /> Hinzugefügt</> : <><Plus size={12} /> Hinzufügen</>}
                 </motion.button>
               </motion.div>
@@ -402,9 +807,9 @@ function AddMember({ groupId, onBack }) {
   )
 }
 
-// ── Root GroupView (router) ───────────────────────────────────────────────────
-export default function GroupView() {
-  const [screen, setScreen] = useState('list') // list | create | detail | add-member
+// ── Root ──────────────────────────────────────────────────────────────────────
+export default function GroupView({ onReveal }) {
+  const [screen,  setScreen]  = useState('list')
   const [groupId, setGroupId] = useState(null)
 
   return (
@@ -423,7 +828,14 @@ export default function GroupView() {
         <GroupDetail key={`detail-${groupId}`}
           groupId={groupId}
           onBack={() => setScreen('list')}
-          onAddMember={() => setScreen('add-member')} />
+          onAddMember={() => setScreen('add-member')}
+          onOpenChat={() => setScreen('chat')}
+          onReveal={onReveal} />
+      )}
+      {screen === 'chat' && (
+        <GroupChat key={`chat-${groupId}`}
+          groupId={groupId}
+          onBack={() => setScreen('detail')} />
       )}
       {screen === 'add-member' && (
         <AddMember key="add-member"

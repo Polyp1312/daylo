@@ -1,6 +1,5 @@
-// v4
-import { createContext, useContext, useState, useEffect } from 'react'
-import { api, getToken, setToken, clearToken } from '../lib/api'
+import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { api, getToken, setToken, clearToken, onUnauthorized } from '../lib/api'
 
 const Ctx = createContext(null)
 export const useAuth = () => useContext(Ctx)
@@ -9,19 +8,33 @@ export function AuthProvider({ children }) {
   const [user,    setUser]    = useState(null)
   const [loading, setLoading] = useState(true)
 
+  const signOut = useCallback(() => {
+    clearToken()
+    setUser(null)
+  }, [])
+
+  // Auto-logout when any request receives a 401 (expired token)
+  useEffect(() => {
+    return onUnauthorized(() => {
+      if (getToken()) signOut()
+    })
+  }, [signOut])
+
   useEffect(() => {
     const token = getToken()
     if (!token) { setLoading(false); return }
     api.me().then(({ user: u, error }) => {
       if (u) setUser(u)
-      else clearToken()
+      else { clearToken() }
+      setLoading(false)
+    }).catch(() => {
+      clearToken()
       setLoading(false)
     })
   }, [])
 
-  const signUp = async (email, password, username) => {
-    return api.register(email, password, username)
-  }
+  const signUp = (email, password, username) =>
+    api.register(email, password, username)
 
   const verifyCode = async (email, code) => {
     const data = await api.verify(email, code)
@@ -39,14 +52,9 @@ export function AuthProvider({ children }) {
     return { success: true }
   }
 
-  const signOut = () => {
-    clearToken()
-    setUser(null)
-  }
-
   const updateUser = (newUser, newToken) => {
     setUser(newUser)
-    setToken(newToken)
+    if (newToken) setToken(newToken)
   }
 
   return (

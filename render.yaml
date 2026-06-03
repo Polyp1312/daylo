@@ -2,8 +2,13 @@ services:
   - type: web
     name: yourday
     runtime: node
-    buildCommand: apt-get update -qq && apt-get install -y ffmpeg && npm install && npm run build
+    buildCommand: apt-get update -qq && apt-get install -y ffmpeg && npm ci && npm run build
     startCommand: node server.js
+    healthCheckPath: /api/push/vapid-key
     envVars:
       - key: NODE_ENV
         value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PORT
+        value: 3000

@@ -5,6 +5,8 @@ import App from './App.jsx'
 import AuthView from './views/AuthView.jsx'
 import { AppProvider } from './context/AppContext.jsx'
 import { AuthProvider, useAuth } from './context/AuthContext.jsx'
+import { ErrorBoundary } from './components/ErrorBoundary.jsx'
+import { ToastProvider } from './components/Toast.jsx'
 
 function Root() {
   const { user, loading } = useAuth()
@@ -21,15 +23,21 @@ function Root() {
 
   return (
     <AppProvider>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </AppProvider>
   )
 }
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <AuthProvider>
-      <Root />
-    </AuthProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <AuthProvider>
+          <Root />
+        </AuthProvider>
+      </ToastProvider>
+    </ErrorBoundary>
   </StrictMode>,
 )

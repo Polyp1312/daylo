@@ -8,9 +8,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_FILE   = path.join(__dirname, '..', 'daylo.db')
 
 const db = new Database(DB_FILE)
-db.pragma('journal_mode = WAL')   // concurrent reads, serialized writes
-db.pragma('foreign_keys = ON')
 
+// ── Performance & safety pragmas ─────────────────────────────────────────────
+db.pragma('journal_mode = WAL')      // concurrent reads, serialised writes
+db.pragma('foreign_keys = ON')       // enforce referential integrity
+db.pragma('busy_timeout = 5000')     // wait up to 5s instead of throwing SQLITE_BUSY
+db.pragma('synchronous = NORMAL')    // fsync only at checkpoints — safe with WAL
+db.pragma('cache_size = -8000')      // 8 MB page cache
+db.pragma('temp_store = MEMORY')     // temp tables in RAM
+
+// ── Core schema ───────────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id         TEXT PRIMARY KEY,
@@ -19,25 +26,26 @@ db.exec(`
     hash       TEXT NOT NULL,
     code       TEXT,
     verified   INTEGER DEFAULT 0,
+    avatar     TEXT,
     last_seen  INTEGER,
     created_at INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS friends (
-    user_id   TEXT NOT NULL,
-    friend_id TEXT NOT NULL,
+    user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    friend_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, friend_id)
   );
 
   CREATE TABLE IF NOT EXISTS friend_requests (
-    requester_id TEXT NOT NULL,
-    target_id    TEXT NOT NULL,
+    requester_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     PRIMARY KEY (requester_id, target_id)
   );
 
   CREATE TABLE IF NOT EXISTS notifications (
     id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     type       TEXT NOT NULL,
     from_id    TEXT,
     message    TEXT NOT NULL,
@@ -46,54 +54,117 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS vlogs (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
-    filename   TEXT NOT NULL,
-    duration   REAL DEFAULT 0,
-    clip_count INTEGER DEFAULT 1,
-    emoji      TEXT DEFAULT '🎬',
-    created_at INTEGER NOT NULL
+    id                 TEXT PRIMARY KEY,
+    user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    filename           TEXT NOT NULL,
+    processed_filename TEXT,
+    thumbnail          TEXT,
+    title              TEXT,
+    duration           REAL DEFAULT 0,
+    clip_count         INTEGER DEFAULT 1,
+    emoji              TEXT DEFAULT '🎬',
+    status             TEXT DEFAULT 'ready',
+    created_at         INTEGER NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_vlogs_user ON vlogs(user_id, created_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_id);
-  CREATE INDEX IF NOT EXISTS idx_req_target ON friend_requests(target_id);
-  CREATE INDEX IF NOT EXISTS idx_req_requester ON friend_requests(requester_id);
-`)
-
-// Safe column migrations — silently ignore if column already exists
-for (const sql of [
-  'ALTER TABLE vlogs ADD COLUMN title TEXT',
-  'ALTER TABLE vlogs ADD COLUMN thumbnail TEXT',
-  "ALTER TABLE vlogs ADD COLUMN status TEXT DEFAULT 'ready'",
-  'ALTER TABLE vlogs ADD COLUMN processed_filename TEXT',
-]) { try { db.exec(sql) } catch {} }
-
-db.exec(`
   CREATE TABLE IF NOT EXISTS reactions (
-    vlog_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
+    vlog_id TEXT NOT NULL REFERENCES vlogs(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     type    TEXT NOT NULL,
     PRIMARY KEY (vlog_id, user_id, type)
   );
-  CREATE INDEX IF NOT EXISTS idx_reactions_vlog ON reactions(vlog_id);
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id         TEXT PRIMARY KEY,
+    vlog_id    TEXT NOT NULL REFERENCES vlogs(id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 
   CREATE TABLE IF NOT EXISTS push_subscriptions (
     id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     endpoint   TEXT NOT NULL UNIQUE,
     p256dh     TEXT NOT NULL,
     auth       TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
 
   CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS user_groups (
+    id                 TEXT PRIMARY KEY,
+    name               TEXT NOT NULL,
+    emoji              TEXT DEFAULT '👥',
+    creator_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    rotation_order     TEXT DEFAULT '[]',
+    rotation_idx       INTEGER DEFAULT 0,
+    last_rotation_date TEXT DEFAULT '',
+    created_at         INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+    user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS group_messages (
+    id         TEXT PRIMARY KEY,
+    group_id   TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS group_message_reads (
+    group_id     TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_read_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id         TEXT PRIMARY KEY,
+    from_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    to_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    read       INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
 `)
+
+// ── Indexes ───────────────────────────────────────────────────────────────────
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_notif_user      ON notifications(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_vlogs_user      ON vlogs(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_friends_user    ON friends(user_id);
+  CREATE INDEX IF NOT EXISTS idx_req_target      ON friend_requests(target_id);
+  CREATE INDEX IF NOT EXISTS idx_req_requester   ON friend_requests(requester_id);
+  CREATE INDEX IF NOT EXISTS idx_reactions_vlog  ON reactions(vlog_id);
+  CREATE INDEX IF NOT EXISTS idx_push_user       ON push_subscriptions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_comments_vlog   ON comments(vlog_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_group_members_u ON group_members(user_id);
+  CREATE INDEX IF NOT EXISTS idx_gmsgs_group     ON group_messages(group_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_messages_pair   ON messages(from_id, to_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_to     ON messages(to_id, read);
+`)
+
+// ── Safe column migrations (idempotent) ───────────────────────────────────────
+const migrations = [
+  'ALTER TABLE vlogs ADD COLUMN title TEXT',
+  'ALTER TABLE vlogs ADD COLUMN thumbnail TEXT',
+  "ALTER TABLE vlogs ADD COLUMN status TEXT DEFAULT 'ready'",
+  'ALTER TABLE vlogs ADD COLUMN processed_filename TEXT',
+  'ALTER TABLE users ADD COLUMN avatar TEXT',
+]
+for (const sql of migrations) {
+  try { db.exec(sql) } catch { /* column already exists */ }
+}
 
 // ── Migrate old daylo-db.json (runs once, then renames the file) ───────────────
 const OLD = path.join(__dirname, '..', 'daylo-db.json')
@@ -112,8 +183,8 @@ if (fs.existsSync(OLD)) {
           hash: u.hash, code: u.code ?? null, verified: u.verified ? 1 : 0,
           lastSeen: u.lastSeen ?? null, createdAt: u.createdAt ?? Date.now(),
         })
-        for (const fid of u.friendIds ?? [])        iFriend.run(u.id, fid)
-        for (const rid of u.pendingRequests ?? [])  iReq.run(rid, u.id)
+        for (const fid of u.friendIds ?? [])       iFriend.run(u.id, fid)
+        for (const rid of u.pendingRequests ?? []) iReq.run(rid, u.id)
         for (const n of u.notifications ?? []) {
           iNotif.run({
             id: n.id ?? crypto.randomUUID(), userId: u.id, type: n.type,
@@ -130,47 +201,5 @@ if (fs.existsSync(OLD)) {
     console.warn('⚠️  JSON-Migration fehlgeschlagen:', e.message)
   }
 }
-
-// ── New feature tables ─────────────────────────────────────────────────────────
-db.exec(`
-  CREATE TABLE IF NOT EXISTS comments (
-    id         TEXT PRIMARY KEY,
-    vlog_id    TEXT NOT NULL,
-    user_id    TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_comments_vlog ON comments(vlog_id, created_at);
-
-  CREATE TABLE IF NOT EXISTS user_groups (
-    id                 TEXT PRIMARY KEY,
-    name               TEXT NOT NULL,
-    emoji              TEXT DEFAULT '👥',
-    creator_id         TEXT NOT NULL,
-    rotation_order     TEXT DEFAULT '[]',
-    rotation_idx       INTEGER DEFAULT 0,
-    last_rotation_date TEXT DEFAULT '',
-    created_at         INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS group_members (
-    group_id TEXT NOT NULL,
-    user_id  TEXT NOT NULL,
-    PRIMARY KEY (group_id, user_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
-
-  CREATE TABLE IF NOT EXISTS messages (
-    id         TEXT PRIMARY KEY,
-    from_id    TEXT NOT NULL,
-    to_id      TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    read       INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(from_id, to_id);
-  CREATE INDEX IF NOT EXISTS idx_messages_to   ON messages(to_id, read);
-`)
-try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT') } catch {}
 
 export default db
