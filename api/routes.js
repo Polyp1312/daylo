@@ -614,6 +614,7 @@ export function registerRoutes(api) {
       db.prepare('INSERT OR IGNORE INTO friend_requests VALUES (?,?)').run(me.id, targetId)
       const sender = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
       addNotification(targetId, 'friend_request', me.id, `${sender?.username ?? 'Jemand'} möchte dein Freund sein.`)
+      pushToUser(targetId, '👤 Freundschaftsanfrage', `${sender?.username ?? 'Jemand'} möchte dein Freund sein.`)
     }
     res.json({ success: true })
   })
