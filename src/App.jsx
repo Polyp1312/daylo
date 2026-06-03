@@ -4,7 +4,7 @@ import {
   Bell, Video, Users, Home, Play, User, MessageCircle,
   Clock, Zap, Sparkles, Camera, QrCode, X, Plus,
   Check, CheckCircle, UserPlus, ChevronLeft, Trash2, Send, Flame, Heart, Star,
-  MessageSquare, Pause, Volume2, VolumeX, Trophy,
+  MessageSquare, Pause, Volume2, VolumeX, Trophy, Share2, MessageCircleMore,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 
@@ -152,11 +152,12 @@ function NotificationsPanel({ onClose }) {
   useEffect(() => { markNotificationsRead() }, [])
 
   const notifIcon = type => {
-    if (type === 'friend_accepted') return <CheckCircle size={15} className="text-[#2ECC71]" />
-    if (type === 'group_added')     return <Users       size={15} className="text-[#00D9FF]" />
-    if (type === 'vlog_upload')     return <Video       size={15} className="text-[#FF9F43]" />
-    if (type === 'vlog_react')      return <Heart       size={15} className="text-[#FF6B9D]" />
-    if (type === 'your_turn')       return <Star        size={15} className="text-[#FF9F43]" />
+    if (type === 'friend_accepted') return <CheckCircle      size={15} className="text-[#2ECC71]" />
+    if (type === 'group_added')     return <Users            size={15} className="text-[#00D9FF]" />
+    if (type === 'vlog_upload')     return <Video            size={15} className="text-[#FF9F43]" />
+    if (type === 'vlog_react')      return <Heart            size={15} className="text-[#FF6B9D]" />
+    if (type === 'vlog_comment')    return <MessageCircleMore size={15} className="text-[#7B61FF]" />
+    if (type === 'your_turn')       return <Star             size={15} className="text-[#FF9F43]" />
     return <UserPlus size={15} className="text-[#7B61FF]" />
   }
 
@@ -918,7 +919,13 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
         </div>
         <div className="flex items-center gap-2.5">
           {myStreak > 0 && (
-            <motion.div
+            <motion.button
+              whileTap={{ scale: 0.92 }}
+              onClick={() => {
+                const text = `🔥 ${myStreak} Tage Streak bei daylo! Nehme ich täglich meine 60 Sekunden auf.`
+                if (navigator.share) navigator.share({ title: 'daylo Streak', text })
+                else navigator.clipboard?.writeText(text).catch(() => {})
+              }}
               initial={{ scale: 0.6, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ type: 'spring', damping: 12, stiffness: 260, delay: 0.15 }}
@@ -935,7 +942,7 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
               </motion.span>
               <AnimatedNumber value={myStreak} duration={0.6}
                 className="text-[#FF9F43] text-xs font-black tabular-nums" />
-            </motion.div>
+            </motion.button>
           )}
           <motion.button whileTap={{ scale: 0.88 }} onClick={onShowQR}
             className="w-9 h-9 rounded-full bg-[#1C1C1E] flex items-center justify-center">
@@ -1484,6 +1491,47 @@ function RevealView({ onBack, targetUserId, initialVlogId }) {
   )
 }
 
+// ── Onboarding ────────────────────────────────────────────────────────────────
+function OnboardingModal({ onDone }) {
+  const steps = [
+    { emoji: '🎬', title: 'Willkommen bei daylo!', body: 'Nimm täglich mindestens 60 Sekunden deines Tages auf — kurze Clips, ehrliche Momente.' },
+    { emoji: '👥', title: 'Gruppen & Rotation', body: 'Erstelle eine Gruppe mit Freunden. Jeden Tag ist eine andere Person dran — alle sehen den Vlog.' },
+    { emoji: '🔥', title: 'Streaks & Ziele', body: 'Täglich aufnehmen baut deinen Streak auf. Je länger der Streak, desto mehr Erinnerungen sammelst du.' },
+  ]
+  const [idx, setIdx] = useState(0)
+  const step = steps[idx]
+  const isLast = idx === steps.length - 1
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+      className="fixed inset-0 z-[100] flex items-end justify-center px-4 pb-8"
+      style={{ background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(20px)' }}>
+      <motion.div
+        key={idx}
+        initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ type: 'spring', damping: 22, stiffness: 280 }}
+        className="w-full max-w-[360px] rounded-3xl p-7 text-center"
+        style={{ background: '#141415', border: '1px solid rgba(255,255,255,0.08)' }}>
+        <div className="text-6xl mb-5">{step.emoji}</div>
+        <h2 className="text-white font-black text-xl mb-2">{step.title}</h2>
+        <p className="text-[#8E8E93] text-sm leading-relaxed mb-8">{step.body}</p>
+        <div className="flex justify-center gap-1.5 mb-6">
+          {steps.map((_, i) => (
+            <div key={i} className="h-1.5 rounded-full transition-all"
+              style={{ width: i === idx ? 24 : 8, background: i === idx ? '#7B61FF' : '#2C2C2E' }} />
+          ))}
+        </div>
+        <motion.button whileTap={{ scale: 0.97 }}
+          onClick={() => isLast ? onDone() : setIdx(p => p + 1)}
+          className="w-full py-4 rounded-2xl font-black text-white text-base"
+          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 24px rgba(123,97,255,0.4)' }}>
+          {isLast ? 'Loslegen 🚀' : 'Weiter'}
+        </motion.button>
+      </motion.div>
+    </motion.div>
+  )
+}
+
 // ── App root ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [view,              setView]              = useState('dashboard')
@@ -1493,6 +1541,9 @@ export default function App() {
   const [revealTarget,      setRevealTarget]      = useState(null)
   const [revealInitialVlog, setRevealInitialVlog] = useState(null)
   const [messageFriend,     setMessageFriend]     = useState(null)
+  const [showOnboarding,    setShowOnboarding]    = useState(
+    () => !localStorage.getItem('daylo_onboarding_done')
+  )
 
   const [totalSecs, setTotalSecs] = useState(secsUntilMidnight)
   const countdown = secsToHMS(totalSecs)
@@ -1570,6 +1621,7 @@ export default function App() {
         <AnimatePresence>
           {showQR            && <QRModal             key="qr"    onClose={() => setShowQR(false)} />}
           {showNotifications && <NotificationsPanel  key="notif" onClose={() => setShowNotifications(false)} />}
+          {showOnboarding    && <OnboardingModal     key="onb"   onDone={() => { localStorage.setItem('daylo_onboarding_done','1'); setShowOnboarding(false) }} />}
         </AnimatePresence>
       </div>
     </div>

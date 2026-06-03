@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Plus, Trash2, UserPlus, ChevronLeft, Users, Check, Pencil, X, Crown,
-  MessageCircle, Send, LogOut, Play, CornerUpLeft,
+  MessageCircle, Send, LogOut, Play, CornerUpLeft, Link, Copy,
 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { useToast } from '../components/Toast'
@@ -25,7 +25,7 @@ function formatTime(ts) {
 }
 
 // ── Group list ───────────────────────────────────────────────────────────────
-function GroupList({ onSelect, onCreate, onOpenChat }) {
+function GroupList({ onSelect, onCreate, onOpenChat, onJoinByCode }) {
   const { groups, getUser } = useApp()
   const totalUnread = groups.reduce((s, g) => s + (g.unreadCount ?? 0), 0)
 
@@ -41,12 +41,20 @@ function GroupList({ onSelect, onCreate, onOpenChat }) {
             </div>
           )}
         </div>
-        <motion.button whileTap={{ scale: 0.88 }} onClick={onCreate}
-          className="flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold"
-          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 16px rgba(123,97,255,0.4)' }}>
-          <Plus size={14} className="text-white" />
-          <span className="text-white">Neu</span>
-        </motion.button>
+        <div className="flex gap-2">
+          <motion.button whileTap={{ scale: 0.88 }} onClick={onJoinByCode}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-full text-sm font-bold"
+            style={{ background: 'rgba(0,217,255,0.12)', border: '1px solid rgba(0,217,255,0.3)', color: '#00D9FF' }}>
+            <Link size={14} />
+            <span>Beitreten</span>
+          </motion.button>
+          <motion.button whileTap={{ scale: 0.88 }} onClick={onCreate}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold"
+            style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 16px rgba(123,97,255,0.4)' }}>
+            <Plus size={14} className="text-white" />
+            <span className="text-white">Neu</span>
+          </motion.button>
+        </div>
       </div>
 
       {groups.length === 0 ? (
@@ -248,6 +256,7 @@ function CreateGroup({ onBack, onCreated }) {
 // ── Group detail ─────────────────────────────────────────────────────────────
 function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
   const { groups, me, getUser, removeMember, deleteGroup, renameGroup, updateGroup, presences } = useApp()
+  const toast = useToast()
   const group = groups.find(g => g.id === groupId)
   const [confirmRemove, setConfirmRemove] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -255,6 +264,20 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
   const [editing,       setEditing]       = useState(false)
   const [editName,      setEditName]      = useState(group?.name ?? '')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [inviteCode,    setInviteCode]    = useState(null)
+
+  const handleShareInvite = async () => {
+    try {
+      const { code } = await api.groups.inviteCode(groupId)
+      setInviteCode(code)
+      if (navigator.share) {
+        await navigator.share({ title: `daylo — ${group?.name}`, text: `Tritt meiner daylo-Gruppe bei! Code: ${code}` })
+      } else {
+        await navigator.clipboard.writeText(code)
+        toast?.show(`Code kopiert: ${code}`, 'success')
+      }
+    } catch {}
+  }
 
   if (!group) { onBack(); return null }
 
@@ -411,14 +434,22 @@ function GroupDetail({ groupId, onBack, onAddMember, onOpenChat, onReveal }) {
       <div className="px-5 mb-4">
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm font-black text-white">{group.memberIds.length} Mitglieder</span>
-          {isCreator && (
-            <motion.button whileTap={{ scale: 0.88 }} onClick={onAddMember}
+          <div className="flex gap-2">
+            <motion.button whileTap={{ scale: 0.88 }} onClick={handleShareInvite}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold"
-              style={{ background: 'rgba(123,97,255,0.15)', border: '1px solid rgba(123,97,255,0.3)', color: '#7B61FF' }}>
-              <UserPlus size={12} />
-              Hinzufügen
+              style={{ background: 'rgba(0,217,255,0.12)', border: '1px solid rgba(0,217,255,0.3)', color: '#00D9FF' }}>
+              <Link size={12} />
+              {inviteCode ? inviteCode : 'Einladen'}
             </motion.button>
-          )}
+            {isCreator && (
+              <motion.button whileTap={{ scale: 0.88 }} onClick={onAddMember}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold"
+                style={{ background: 'rgba(123,97,255,0.15)', border: '1px solid rgba(123,97,255,0.3)', color: '#7B61FF' }}>
+                <UserPlus size={12} />
+                Hinzufügen
+              </motion.button>
+            )}
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -968,6 +999,103 @@ function AddMember({ groupId, onBack }) {
   )
 }
 
+// ── Join by code ──────────────────────────────────────────────────────────────
+function JoinByCode({ onBack, onJoined }) {
+  const { reloadGroups } = useApp()
+  const toast = useToast()
+  const [code,    setCode]    = useState('')
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [joining, setJoining] = useState(false)
+
+  const handlePreview = async () => {
+    if (code.trim().length < 4) return
+    setLoading(true)
+    const d = await api.groups.previewCode(code.trim()).catch(() => ({}))
+    setLoading(false)
+    if (d.error) { toast?.show(d.error, 'error'); return }
+    setPreview(d)
+  }
+
+  const handleJoin = async () => {
+    setJoining(true)
+    const d = await api.groups.joinByCode(code.trim()).catch(e => ({ error: e.message }))
+    setJoining(false)
+    if (d.error) { toast?.show(d.error, 'error'); return }
+    await reloadGroups()
+    toast?.show(`Gruppe beigetreten! 🎉`, 'success')
+    onJoined(d.group.id)
+  }
+
+  return (
+    <motion.div key="join-code" {...fwd} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
+      <div className="flex items-center gap-3 px-5 pt-14 pb-6">
+        <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
+          className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
+          <ChevronLeft size={18} className="text-white" />
+        </motion.button>
+        <span className="text-xl font-black text-white">Gruppe beitreten</span>
+      </div>
+
+      <div className="px-5 space-y-4">
+        <div>
+          <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-3">Einladungscode eingeben</p>
+          <div className="flex gap-2">
+            <div className="flex-1 flex items-center gap-3 rounded-2xl px-4 py-3.5"
+              style={{ background: 'rgba(28,28,30,0.9)', border: '1.5px solid rgba(255,255,255,0.07)' }}>
+              <Link size={14} className="text-[#8E8E93] flex-shrink-0" />
+              <input
+                autoFocus value={code}
+                onChange={e => { setCode(e.target.value.toUpperCase()); setPreview(null) }}
+                onKeyDown={e => e.key === 'Enter' && handlePreview()}
+                placeholder="z.B. A1B2C3D4"
+                maxLength={8}
+                className="flex-1 bg-transparent text-white placeholder-[#3A3A3C] text-sm font-mono font-bold outline-none tracking-widest"
+                style={{ caretColor: '#00D9FF' }}
+              />
+            </div>
+            <motion.button whileTap={{ scale: 0.94 }} onClick={handlePreview}
+              disabled={loading || code.trim().length < 4}
+              className="px-4 py-3.5 rounded-2xl font-bold text-sm disabled:opacity-40"
+              style={{ background: 'rgba(0,217,255,0.15)', border: '1px solid rgba(0,217,255,0.3)', color: '#00D9FF' }}>
+              {loading ? '…' : 'Suchen'}
+            </motion.button>
+          </div>
+        </div>
+
+        <AnimatePresence>
+          {preview && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+              className="rounded-2xl p-5"
+              style={{ background: 'rgba(20,20,21,0.9)', border: '1px solid rgba(0,217,255,0.2)' }}>
+              <div className="flex items-center gap-4 mb-4">
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl"
+                  style={{ background: 'rgba(0,217,255,0.12)', border: '1px solid rgba(0,217,255,0.25)' }}>
+                  {preview.group?.emoji ?? '👥'}
+                </div>
+                <div>
+                  <p className="text-white font-black text-lg">{preview.group?.name}</p>
+                  <p className="text-[#8E8E93] text-sm">{preview.group?.memberCount} Mitglieder</p>
+                </div>
+              </div>
+              {preview.alreadyMember ? (
+                <p className="text-[#FF9F43] text-sm font-semibold text-center py-2">Du bist bereits Mitglied dieser Gruppe.</p>
+              ) : (
+                <motion.button whileTap={{ scale: 0.97 }} onClick={handleJoin} disabled={joining}
+                  className="w-full py-3.5 rounded-2xl font-black text-white text-sm disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 20px rgba(123,97,255,0.35)' }}>
+                  {joining ? 'Beitreten…' : `${preview.group?.emoji} Gruppe beitreten`}
+                </motion.button>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  )
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function GroupView({ onReveal }) {
   const [screen,  setScreen]  = useState('list')
@@ -979,6 +1107,7 @@ export default function GroupView({ onReveal }) {
         <GroupList key="list"
           onSelect={id => { setGroupId(id); setScreen('detail') }}
           onCreate={() => setScreen('create')}
+          onJoinByCode={() => setScreen('join-code')}
           onOpenChat={id => { setGroupId(id); setScreen('chat') }} />
       )}
       {screen === 'create' && (
@@ -1003,6 +1132,11 @@ export default function GroupView({ onReveal }) {
         <AddMember key="add-member"
           groupId={groupId}
           onBack={() => setScreen('detail')} />
+      )}
+      {screen === 'join-code' && (
+        <JoinByCode key="join-code"
+          onBack={() => setScreen('list')}
+          onJoined={id => { setGroupId(id); setScreen('detail') }} />
       )}
     </AnimatePresence>
   )

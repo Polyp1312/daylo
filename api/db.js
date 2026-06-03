@@ -143,6 +143,13 @@ db.exec(`
     emoji      TEXT NOT NULL,
     PRIMARY KEY (message_id, user_id, emoji)
   );
+
+  CREATE TABLE IF NOT EXISTS group_invite_codes (
+    code       TEXT PRIMARY KEY,
+    group_id   TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL
+  );
 `)
 
 // ── Indexes ───────────────────────────────────────────────────────────────────

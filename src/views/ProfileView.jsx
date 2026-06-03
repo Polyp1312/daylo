@@ -768,14 +768,19 @@ function AddFriendScreen({ onBack }) {
 }
 
 // ── Friend profile screen ─────────────────────────────────────────────────────
-function FriendProfileScreen({ friend, onBack, onMessage }) {
+function FriendProfileScreen({ friend, onBack, onMessage, onReveal }) {
   const { presences } = useApp()
   const [profile, setProfile] = useState(null)
+  const [vlogs,   setVlogs]   = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api.users.profile(friend.id).then(d => {
-      if (!d.error) setProfile(d)
+    Promise.all([
+      api.users.profile(friend.id),
+      api.vlogs.userList(friend.id, 12),
+    ]).then(([p, v]) => {
+      if (!p.error) setProfile(p)
+      setVlogs(v.vlogs ?? [])
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [friend.id])
@@ -841,6 +846,29 @@ function FriendProfileScreen({ friend, onBack, onMessage }) {
                     <span className="text-2xl">{g.emoji}</span>
                     <span className="text-sm font-semibold text-white">{g.name}</span>
                   </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {vlogs.length > 0 && (
+            <div>
+              <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-3">
+                Vlogs · {vlogs.length}
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {vlogs.map(v => (
+                  <motion.button key={v.id} whileTap={{ scale: 0.94 }}
+                    onClick={() => onReveal?.(friend.id, v.id)}
+                    className="aspect-[3/4] rounded-xl overflow-hidden relative"
+                    style={{ background: '#1C1C1E' }}>
+                    {v.thumbnail
+                      ? <img src={v.thumbnail} alt="" className="w-full h-full object-cover" />
+                      : <div className="w-full h-full flex items-center justify-center text-2xl">{v.emoji ?? '🎬'}</div>
+                    }
+                    <div className="absolute bottom-1 right-1 bg-black/60 rounded-full px-1.5 py-0.5">
+                      <span className="text-[9px] text-white font-bold">{Math.round(v.duration)}s</span>
+                    </div>
+                  </motion.button>
                 ))}
               </div>
             </div>
@@ -1249,7 +1277,8 @@ export default function ProfileView({ onReveal, onOpenMessage }) {
         <FriendProfileScreen key={`fp-${friendForProfile.id}`}
           friend={friendForProfile}
           onBack={() => setScreen('main')}
-          onMessage={f => { onOpenMessage?.(f); setScreen('main') }} />
+          onMessage={f => { onOpenMessage?.(f); setScreen('main') }}
+          onReveal={onReveal} />
       )}
     </AnimatePresence>
   )

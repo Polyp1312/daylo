@@ -899,6 +899,15 @@ export function registerRoutes(api) {
       SELECT c.id, c.text, c.created_at, u.id as user_id, u.username, u.avatar
       FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?
     `).get(id)
+    const vlogOwner = db.prepare('SELECT user_id FROM vlogs WHERE id=?').get(req.params.id)
+    if (vlogOwner && vlogOwner.user_id !== me.id) {
+      const commenter = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
+      const preview = text.length > 40 ? text.slice(0, 40) + '…' : text
+      addNotification(vlogOwner.user_id, 'vlog_comment', me.id,
+        `${commenter?.username ?? 'Jemand'} hat deinen Vlog kommentiert: „${preview}"`)
+      pushToUser(vlogOwner.user_id, '💬 Neuer Kommentar',
+        `${commenter?.username ?? 'Jemand'}: ${text.slice(0, 60)}`)
+    }
     res.json({ comment: c })
   })
 
@@ -1032,6 +1041,58 @@ export function registerRoutes(api) {
       `${adder?.username ?? 'Jemand'} hat dich zur Gruppe „${g.name}" hinzugefügt.`)
     pushToUser(userId, g.emoji + ' ' + g.name, `${adder?.username ?? 'Jemand'} hat dich hinzugefügt!`)
     const updated = db.prepare('SELECT * FROM user_groups WHERE id=?').get(req.params.id)
+    res.json({ group: formatGroup(updated, me.id) })
+  })
+
+  // ── Group invite codes ──────────────────────────────────────────────────────
+
+  api.post('/api/groups/:id/invite-code', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    if (!db.prepare('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?').get(req.params.id, me.id))
+      return res.status(403).json({ error: 'Kein Zugriff.' })
+    const existing = db.prepare('SELECT code FROM group_invite_codes WHERE group_id=?').get(req.params.id)
+    if (existing) return res.json({ code: existing.code })
+    const code = crypto.randomBytes(4).toString('hex').toUpperCase()
+    db.prepare('INSERT INTO group_invite_codes (code,group_id,created_by,created_at) VALUES (?,?,?,?)')
+      .run(code, req.params.id, me.id, Date.now())
+    res.json({ code })
+  })
+
+  api.get('/api/groups/join/:code', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const invite = db.prepare('SELECT * FROM group_invite_codes WHERE code=?').get(req.params.code.toUpperCase())
+    if (!invite) return res.status(404).json({ error: 'Ungültiger Einladungscode.' })
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=?').get(invite.group_id)
+    if (!g) return res.status(404).json({ error: 'Gruppe nicht gefunden.' })
+    const members = db.prepare('SELECT u.id,u.username,u.avatar FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.group_id=?').all(g.id)
+    const alreadyMember = members.some(m => m.id === me.id)
+    res.json({ group: { id: g.id, name: g.name, emoji: g.emoji, memberCount: members.length }, alreadyMember })
+  })
+
+  api.post('/api/groups/join/:code', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const invite = db.prepare('SELECT * FROM group_invite_codes WHERE code=?').get(req.params.code.toUpperCase())
+    if (!invite) return res.status(404).json({ error: 'Ungültiger Einladungscode.' })
+    const g = db.prepare('SELECT * FROM user_groups WHERE id=?').get(invite.group_id)
+    if (!g) return res.status(404).json({ error: 'Gruppe nicht gefunden.' })
+    if (db.prepare('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?').get(g.id, me.id))
+      return res.status(409).json({ error: 'Du bist bereits Mitglied.' })
+    db.prepare('INSERT OR IGNORE INTO group_members VALUES (?,?)').run(g.id, me.id)
+    const rotation = JSON.parse(g.rotation_order || '[]')
+    if (!rotation.includes(me.id)) {
+      rotation.push(me.id)
+      db.prepare('UPDATE user_groups SET rotation_order=? WHERE id=?').run(JSON.stringify(rotation), g.id)
+    }
+    const joiner = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
+    const members = db.prepare('SELECT user_id FROM group_members WHERE group_id=? AND user_id!=?').all(g.id, me.id)
+    for (const m of members) {
+      addNotification(m.user_id, 'group_added', me.id,
+        `${joiner?.username ?? 'Jemand'} ist der Gruppe „${g.name}" beigetreten.`)
+    }
+    const updated = db.prepare('SELECT * FROM user_groups WHERE id=?').get(g.id)
     res.json({ group: formatGroup(updated, me.id) })
   })
 

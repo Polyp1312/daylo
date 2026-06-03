@@ -62,6 +62,9 @@ app.use(express.static(path.join(__dirname, 'dist'), {
   },
 }))
 
+// ── Health check ─────────────────────────────────────────────────────────────
+app.get('/health', (_req, res) => res.json({ ok: true }))
+
 // ── SPA fallback ──────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/') || req.path.startsWith('/uploads/')) return next()
@@ -75,4 +78,14 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Interner Serverfehler.' })
 })
 
-app.listen(PORT, () => console.log(`🚀 daylo server läuft auf Port ${PORT}`))
+app.listen(PORT, () => {
+  console.log(`🚀 daylo server läuft auf Port ${PORT}`)
+
+  // Self-ping every 14 minutes to prevent Render free-tier spin-down
+  const APP_URL = process.env.APP_URL
+  if (APP_URL) {
+    setInterval(() => {
+      fetch(`${APP_URL}/health`).catch(() => {})
+    }, 14 * 60 * 1000)
+  }
+})
