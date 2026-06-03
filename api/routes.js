@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import { Resend } from 'resend'
+import nodemailer from 'nodemailer'
 import multer from 'multer'
 import express from 'express'
 import path from 'path'
@@ -22,8 +22,11 @@ fs.mkdirSync(AVATARS_DIR, { recursive: true })
 // ── JWT secret ────────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || 'daylo-secret-2025'
 
-// ── Resend email client ───────────────────────────────────────────────────────
-const resend = new Resend(process.env.RESEND_API_KEY)
+// ── Gmail / nodemailer email client ──────────────────────────────────────────
+const mailer = nodemailer.createTransport({
+  service: 'gmail',
+  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
+})
 
 // ── VAPID keys (auto-generate once, persist in DB) ────────────────────────────
 let vapidPublicKey  = db.prepare('SELECT value FROM config WHERE key=?').get('vapid_public')?.value
@@ -318,8 +321,8 @@ async function notifyFriends(uploaderId, username) {
       `${username} hat heute seinen Vlog hochgeladen! 🎬`)
 
     // Email (non-blocking, best-effort)
-    resend.emails.send({
-      from: 'daylo. <onboarding@resend.dev>',
+    mailer.sendMail({
+      from: `daylo. <${process.env.GMAIL_USER}>`,
       to: friend.email,
       subject: `${username} hat heute seinen Vlog hochgeladen 🎬`,
       html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
@@ -393,8 +396,9 @@ export function registerRoutes(api) {
 
     console.log(`\n🔑  Verifikationscode für ${email}: ${code}\n`)
     try {
-      await resend.emails.send({
-        from: 'daylo. <onboarding@resend.dev>', to: email,
+      await mailer.sendMail({
+        from: `daylo. <${process.env.GMAIL_USER}>`,
+        to: email,
         subject: 'Dein daylo Bestätigungscode',
         html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
           <h2 style="color:#7B61FF">Willkommen bei daylo! 🎬</h2>

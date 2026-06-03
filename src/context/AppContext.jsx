@@ -44,10 +44,12 @@ export function AppProvider({ children }) {
   const [unreadMessages,  setUnreadMessages]   = useState(0)
   const [unreadGroupMsgs, setUnreadGroupMsgs]  = useState(0)
 
-  const friendsRef    = useRef(friends)
-  const isVisibleRef  = useRef(!document.hidden)
+  const friendsRef       = useRef(friends)
+  const notificationsRef = useRef([])
+  const isVisibleRef     = useRef(!document.hidden)
 
   useEffect(() => { friendsRef.current = friends }, [friends])
+  useEffect(() => { notificationsRef.current = notifications }, [notifications])
 
   // Track page visibility — pause polling when tab is hidden
   useEffect(() => {
@@ -90,16 +92,29 @@ export function AppProvider({ children }) {
       api.groups.unreadCount().then(d => { if (d.count != null) setUnreadGroupMsgs(d.count) })
       api.presence.ping()
 
-      // Every 2nd tick (30s): notifications + presence data
+      // Every 2nd tick (30s): notifications, presence, friends, friend-requests
       if (tick % 2 === 0) {
-        api.notifications.list().then(d => { if (d.notifications) setNotifications(d.notifications) })
+        api.notifications.list().then(d => {
+          if (d.notifications) {
+            const prev = notificationsRef.current
+            const hasNewGroupAdded = d.notifications.some(
+              n => n.type === 'group_added' && !prev.some(p => p.id === n.id)
+            )
+            setNotifications(d.notifications)
+            if (hasNewGroupAdded) {
+              api.groups.list().then(r => { if (r.groups) setGroups(r.groups) })
+            }
+          }
+        })
         const ids = friendsRef.current.map(f => f.id)
         if (ids.length) {
           api.presence.get(ids).then(d => { if (d.presences) setPresences(d.presences) })
         }
+        api.friends.list().then(d => { if (d.friends) setFriends(d.friends.map(formatUser)) })
+        api.friends.requests().then(d => { if (d.requests) setRequests(d.requests.map(formatUser)) })
       }
 
-      // Every 4th tick (60s): group list refresh (rotation advances)
+      // Every 4th tick (60s): routine group list refresh (rotation advances)
       if (tick % 4 === 0) {
         api.groups.list().then(d => { if (d.groups) setGroups(d.groups) })
       }

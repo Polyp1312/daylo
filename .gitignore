@@ -13,6 +13,7 @@ dist-ssr
 *.local
 daylo-db.json
 qr.png
+.env
 
 # Editor directories and files
 .vscode/*
