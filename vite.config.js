@@ -1,14 +1,15 @@
-import 'dotenv/config'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import express from 'express'
-import { registerRoutes } from './api/routes.js'
 
+// API plugin only runs during `vite dev` — NOT during `vite build`
+// (dynamic import avoids loading better-sqlite3 / routes.js during production build)
 function apiPlugin() {
   return {
     name: 'daylo-api',
-    configureServer(server) {
+    async configureServer(server) {
+      const { default: express } = await import('express')
+      const { registerRoutes }   = await import('./api/routes.js')
       const api = express()
       api.use(express.json())
       registerRoutes(api)
