@@ -1,22 +1,28 @@
 /* daylo. service worker — push notifications + offline cache */
 
-const CACHE_NAME = 'daylo-shell-v2'
-const SHELL_URLS = ['/', '/index.html']
+const CACHE_NAME = 'daylo-shell-v3'
+const SHELL_URLS = ['/']
 
-// ── Install: pre-cache the app shell ─────────────────────────────────────────
+// ── Install: skip waiting so new SW takes over immediately ────────────────────
 self.addEventListener('install', event => {
-  self.skipWaiting()
+  self.skipWaiting()   // take over without waiting for old tabs to close
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL_URLS)).catch(() => {})
   )
 })
 
-// ── Activate: delete old caches ───────────────────────────────────────────────
+// ── Activate: claim all clients + delete every old cache ─────────────────────
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.keys()
+      .then(keys => Promise.all(keys.map(k => caches.delete(k))))   // wipe ALL caches
+      .then(() => self.clients.claim())                               // take over all tabs
+      .then(() => {
+        // Tell every open tab to reload so they get the fresh app
+        return self.clients.matchAll({ type: 'window' }).then(clients => {
+          clients.forEach(c => c.navigate(c.url))
+        })
+      })
   )
 })
 
