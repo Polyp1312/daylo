@@ -838,8 +838,16 @@ function StoryRingAvatar({ member, isToday, hasUploadedToday, isOnline, size = 6
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToGroup, onGoToRecord }) {
   const { user } = useAuth()
-  const { groups, getUser, myVlogs, myStreak, requests, notifications, presences } = useApp()
-  const [showAllVlogs, setShowAllVlogs] = useState(false)
+  const { groups, getUser, myVlogs, myStreak, requests, notifications, presences, loadMoreVlogs } = useApp()
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore,     setHasMore]     = useState(true)
+
+  const handleLoadMore = async () => {
+    setLoadingMore(true)
+    const added = await loadMoreVlogs()
+    setHasMore(added >= 10)
+    setLoadingMore(false)
+  }
   const [selGroupId,   setSelGroupId]   = useState(null)
   const [groupFeed,    setGroupFeed]    = useState(null)
   const [feedLoading,  setFeedLoading]  = useState(false)
@@ -867,7 +875,6 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
   const hasUploadedToday = todayVlogs.length > 0
 
   const unreadCount   = requests.length + notifications.filter(n => !n.read).length
-  const visibleVlogs  = showAllVlogs ? myVlogs : myVlogs.slice(0, 3)
   const meFormatted   = { avatar: avatarUrl(user?.avatar), initials: username.slice(0, 2).toUpperCase(), color: '#7B61FF' }
   const greeting      = timeGreeting()
 
@@ -1351,18 +1358,12 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
           <span className="text-sm font-bold text-white">
             Meine Vlogs{myVlogs.length > 0 ? ` · ${myVlogs.length}` : ''}
           </span>
-          {myVlogs.length > 3 && (
-            <motion.button whileTap={{ scale: 0.95 }} onClick={() => setShowAllVlogs(p => !p)}
-              className="text-xs text-[#7B61FF] font-semibold">
-              {showAllVlogs ? 'Weniger' : 'Alle anzeigen'}
-            </motion.button>
-          )}
         </div>
 
         {myVlogs.length > 0 ? (
           <div className="space-y-2.5">
             <AnimatePresence>
-              {visibleVlogs.map((v, i) => (
+              {myVlogs.map((v, i) => (
                 <motion.div key={v.id}
                   layout
                   initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
@@ -1407,6 +1408,16 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
                 </motion.div>
               ))}
             </AnimatePresence>
+            {hasMore && (
+              <motion.button whileTap={{ scale: 0.97 }} onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="w-full py-3 rounded-2xl text-sm font-bold disabled:opacity-50 flex items-center justify-center gap-2"
+                style={{ background: 'rgba(123,97,255,0.1)', border: '1px solid rgba(123,97,255,0.2)', color: '#7B61FF' }}>
+                {loadingMore
+                  ? <><div className="w-4 h-4 rounded-full border-2 border-[#7B61FF] border-t-transparent animate-spin" /> Laden…</>
+                  : '↓ Ältere Vlogs laden'}
+              </motion.button>
+            )}
           </div>
         ) : (
           <motion.button whileTap={{ scale: 0.97 }} onClick={onGoToRecord}

@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useAuth } from './AuthContext'
-import { api } from '../lib/api'
+import { api, getToken } from '../lib/api'
 
 const Ctx = createContext(null)
 export const useApp = () => useContext(Ctx)
@@ -69,7 +69,7 @@ export function AppProvider({ children }) {
     api.friends.list().then(d => { if (d.friends) setFriends(d.friends.map(formatUser)) })
     api.friends.requests().then(d => { if (d.requests) setRequests(d.requests.map(formatUser)) })
     api.groups.list().then(d => { if (d.groups) setGroups(d.groups) })
-    api.vlogs.myList().then(d => {
+    api.vlogs.myList(10, 0).then(d => {
       if (d.vlogs)          setMyVlogs(d.vlogs)
       if (d.streak != null) setMyStreak(d.streak)
     })
@@ -78,54 +78,72 @@ export function AppProvider({ children }) {
     api.notifications.list().then(d => { if (d.notifications) setNotifications(d.notifications) })
   }, [uid])
 
-  // ── Consolidated polling interval ────────────────────────────────────────────
-  // One timer for all soft-real-time updates (notifications, unread counts, presence)
+  // ── SSE — real-time events (messages, notifications, group activity) ──────────
+  useEffect(() => {
+    if (!uid) return
+    const token = getToken()
+    if (!token) return
+    let es, retryTimer
+
+    function connect() {
+      es = new EventSource(`/api/sse?token=${encodeURIComponent(token)}`)
+
+      es.addEventListener('new_dm', () => {
+        api.messages.unreadCount().then(d => { if (d.count != null) setUnreadMessages(d.count) })
+      })
+
+      es.addEventListener('new_group_msg', e => {
+        api.groups.unreadCount().then(d => { if (d.count != null) setUnreadGroupMsgs(d.count) })
+        try {
+          const { groupId } = JSON.parse(e.data)
+          setGroups(p => p.map(g => g.id === groupId
+            ? { ...g, unreadCount: (g.unreadCount ?? 0) + 1 }
+            : g
+          ))
+        } catch {}
+      })
+
+      es.addEventListener('notification', e => {
+        try {
+          const notif = JSON.parse(e.data)
+          setNotifications(p => [notif, ...p].slice(0, 50))
+          if (notif.type === 'group_added') {
+            api.groups.list().then(d => { if (d.groups) setGroups(d.groups) })
+          }
+        } catch {}
+      })
+
+      es.onerror = () => { es.close(); retryTimer = setTimeout(connect, 5_000) }
+    }
+
+    connect()
+    return () => { es?.close(); clearTimeout(retryTimer) }
+  }, [uid])
+
+  // ── Polling fallback — refreshes presence, friends and groups periodically ────
   useEffect(() => {
     if (!uid) return
     let tick = 0
 
-    const poll = async () => {
-      if (!isVisibleRef.current) return  // skip when tab is hidden
-
-      // Every tick (15s): unread counts + presence ping
-      api.messages.unreadCount().then(d => { if (d.count != null) setUnreadMessages(d.count) })
-      api.groups.unreadCount().then(d => { if (d.count != null) setUnreadGroupMsgs(d.count) })
+    const poll = () => {
+      if (!isVisibleRef.current) return
       api.presence.ping()
+      api.friends.list().then(d => { if (d.friends) setFriends(d.friends.map(formatUser)) })
+      api.friends.requests().then(d => { if (d.requests) setRequests(d.requests.map(formatUser)) })
 
-      // Every 2nd tick (30s): notifications, presence, friends, friend-requests
       if (tick % 2 === 0) {
-        api.notifications.list().then(d => {
-          if (d.notifications) {
-            const prev = notificationsRef.current
-            const hasNewGroupAdded = d.notifications.some(
-              n => n.type === 'group_added' && !prev.some(p => p.id === n.id)
-            )
-            setNotifications(d.notifications)
-            if (hasNewGroupAdded) {
-              api.groups.list().then(r => { if (r.groups) setGroups(r.groups) })
-            }
-          }
-        })
-        const ids = friendsRef.current.map(f => f.id)
-        if (ids.length) {
-          api.presence.get(ids).then(d => { if (d.presences) setPresences(d.presences) })
-        }
-        api.friends.list().then(d => { if (d.friends) setFriends(d.friends.map(formatUser)) })
-        api.friends.requests().then(d => { if (d.requests) setRequests(d.requests.map(formatUser)) })
-      }
-
-      // Every 4th tick (60s): routine group list refresh (rotation advances)
-      if (tick % 4 === 0) {
+        api.messages.unreadCount().then(d => { if (d.count != null) setUnreadMessages(d.count) })
+        api.groups.unreadCount().then(d => { if (d.count != null) setUnreadGroupMsgs(d.count) })
         api.groups.list().then(d => { if (d.groups) setGroups(d.groups) })
+        const ids = friendsRef.current.map(f => f.id)
+        if (ids.length) api.presence.get(ids).then(d => { if (d.presences) setPresences(d.presences) })
       }
 
       tick++
     }
 
-    // Initial ping
     api.presence.ping()
-
-    const t = setInterval(poll, 15_000)
+    const t = setInterval(poll, 30_000)
     return () => clearInterval(t)
   }, [uid])
 
@@ -248,6 +266,12 @@ export function AppProvider({ children }) {
     setMyVlogs(p => p.filter(v => v.id !== vlogId))
   }, [])
 
+  const loadMoreVlogs = useCallback(async () => {
+    const { vlogs } = await api.vlogs.myList(10, myVlogs.length)
+    if (vlogs?.length) setMyVlogs(p => [...p, ...vlogs])
+    return vlogs?.length ?? 0
+  }, [myVlogs.length])
+
   // ── Messages ──────────────────────────────────────────────────────────────────
   const clearUnread = useCallback(() => setUnreadMessages(0), [])
 
@@ -281,7 +305,7 @@ export function AppProvider({ children }) {
       getUser, acceptRequest, declineRequest, sendRequest, removeFriend,
       createGroup, deleteGroup, renameGroup, updateGroup, addMember, removeMember, reloadGroups,
       fetchGroupMessages, sendGroupMessage,
-      addVlog, deleteVlog, markNotificationsRead, clearUnread,
+      addVlog, deleteVlog, loadMoreVlogs, markNotificationsRead, clearUnread,
     }}>
       {children}
     </Ctx.Provider>

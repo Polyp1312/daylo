@@ -378,6 +378,18 @@ function requireAuth(req, res) {
   return user
 }
 
+// ── SSE (Server-Sent Events) — real-time push to connected clients ────────────
+const sseClients = new Map()   // userId → Set<Response>
+
+function pushSSE(userId, event, data) {
+  const clients = sseClients.get(userId)
+  if (!clients?.size) return
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+  for (const res of [...clients]) {
+    try { res.write(msg) } catch { clients.delete(res) }
+  }
+}
+
 // ── Input helpers ─────────────────────────────────────────────────────────────
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/
 
@@ -518,13 +530,17 @@ function scheduleEveningReminder() {
 
 // ── Notification helper ───────────────────────────────────────────────────────
 function addNotification(userId, type, fromId, message) {
+  const id  = crypto.randomUUID()
+  const now = Date.now()
   db.prepare(`INSERT INTO notifications (id,user_id,type,from_id,message,read,created_at) VALUES (?,?,?,?,?,0,?)`)
-    .run(crypto.randomUUID(), userId, type, fromId, message, Date.now())
+    .run(id, userId, type, fromId, message, now)
   db.prepare(`
     DELETE FROM notifications WHERE user_id=? AND id NOT IN (
       SELECT id FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50
     )
   `).run(userId, userId)
+  // Real-time push to connected SSE clients
+  pushSSE(userId, 'notification', { id, type, fromId, message, created_at: now, read: false })
 }
 
 // ── Vlog formatter ────────────────────────────────────────────────────────────
@@ -630,9 +646,35 @@ function cleanStaleSubscriptions() {
 // ── Routes ────────────────────────────────────────────────────────────────────
 export function registerRoutes(api) {
   scheduleEveningReminder()
-
-  // Run stale subscription cleanup after 10s startup delay (non-blocking)
   setTimeout(cleanStaleSubscriptions, 10_000)
+
+  // ── SSE endpoint — real-time events ────────────────────────────────────────
+  api.get('/api/sse', (req, res) => {
+    const token = req.query.token ?? req.headers.authorization?.slice(7)
+    let me
+    try { me = jwt.verify(token, JWT_SECRET) } catch { return res.status(401).end() }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')   // disable nginx buffering on Render
+    res.flushHeaders()
+
+    if (!sseClients.has(me.id)) sseClients.set(me.id, new Set())
+    sseClients.get(me.id).add(res)
+
+    // Heartbeat every 25 s (keeps connection alive through proxies)
+    const hb = setInterval(() => {
+      try { res.write(':ping\n\n') }
+      catch { clearInterval(hb); sseClients.get(me.id)?.delete(res) }
+    }, 25_000)
+
+    req.on('close', () => {
+      clearInterval(hb)
+      sseClients.get(me.id)?.delete(res)
+      if (!sseClients.get(me.id)?.size) sseClients.delete(me.id)
+    })
+  })
 
   // ── Auth ────────────────────────────────────────────────────────────────────
 
@@ -702,6 +744,49 @@ export function registerRoutes(api) {
     safe.verified = !!safe.verified
     const token = jwt.sign(safe, JWT_SECRET, { expiresIn: '30d' })
     res.json({ success: true, token, user: safe })
+  })
+
+  // ── Password reset ──────────────────────────────────────────────────────────
+
+  api.post('/api/auth/forgot-password', rateLimit, async (req, res) => {
+    const email = sanitizeText(req.body?.email ?? '', 254).toLowerCase()
+    if (!email) return res.status(400).json({ error: 'E-Mail erforderlich.' })
+    const u = db.prepare('SELECT id FROM users WHERE email=? AND verified=1').get(email)
+    // Always return success to prevent email enumeration
+    if (u) {
+      const code    = String(Math.floor(100000 + Math.random() * 900000))
+      const expires = Date.now() + 15 * 60 * 1000  // 15 minutes
+      db.prepare('UPDATE users SET reset_token=?, reset_token_expires=? WHERE id=?').run(code, expires, u.id)
+      console.log(`🔑 Reset-Code für ${email}: ${code}`)
+      try {
+        await mailer.sendMail({
+          from: `daylo. <${process.env.GMAIL_USER}>`,
+          to: email,
+          subject: 'Dein daylo Passwort zurücksetzen',
+          html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
+            <h2 style="color:#7B61FF">Passwort zurücksetzen 🔑</h2>
+            <p>Dein Reset-Code (gültig 15 Minuten):</p>
+            <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#7B61FF;padding:20px;background:#f5f5f5;border-radius:12px;text-align:center">${code}</div>
+            <p style="color:#999;font-size:12px;margin-top:20px">Falls du das nicht angefordert hast, ignoriere diese E-Mail.</p>
+          </div>`,
+        })
+      } catch (err) { console.warn('Reset-Mail Fehler:', err.message) }
+    }
+    res.json({ success: true })
+  })
+
+  api.post('/api/auth/reset-password', rateLimit, async (req, res) => {
+    const email    = sanitizeText(req.body?.email ?? '', 254).toLowerCase()
+    const code     = sanitizeText(req.body?.code ?? '', 10)
+    const password = req.body?.password ?? ''
+    if (!email || !code || !password) return res.status(400).json({ error: 'Alle Felder erforderlich.' })
+    if (password.length < 8) return res.status(400).json({ error: 'Passwort muss mindestens 8 Zeichen haben.' })
+    const u = db.prepare('SELECT * FROM users WHERE email=? AND reset_token=?').get(email, code)
+    if (!u) return res.status(400).json({ error: 'Ungültiger Code.' })
+    if (Date.now() > (u.reset_token_expires ?? 0)) return res.status(400).json({ error: 'Code abgelaufen. Bitte neu anfordern.' })
+    const hash = await bcrypt.hash(password, 12)
+    db.prepare('UPDATE users SET hash=?, reset_token=NULL, reset_token_expires=NULL WHERE id=?').run(hash, u.id)
+    res.json({ success: true })
   })
 
   api.get('/api/auth/me', (req, res) => {
@@ -1497,6 +1582,7 @@ export function registerRoutes(api) {
     const sender = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
     for (const o of others) {
       pushToUser(o.user_id, `${g?.emoji ?? '💬'} ${g?.name ?? 'Gruppe'}`, `${sender?.username ?? '?'}: ${text.slice(0, 80)}`)
+      pushSSE(o.user_id, 'new_group_msg', { groupId: req.params.id, fromId: me.id })
     }
     res.status(201).json({ message: { ...msg, reactions: [], replyTo } })
   })
@@ -1597,6 +1683,7 @@ export function registerRoutes(api) {
     `).get(id)
     const sender = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
     pushToUser(req.params.friendId, `💬 ${sender?.username ?? 'Nachricht'}`, text.slice(0, 80))
+    pushSSE(req.params.friendId, 'new_dm', { fromId: me.id, fromName: sender?.username })
     res.status(201).json({ message: msg })
   })
 

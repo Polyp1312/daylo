@@ -89,9 +89,11 @@ function xhrSend(path, formData) {
 }
 
 export const api = {
-  register:       (email, password, username) => req('POST',   '/api/auth/register',        { email, password, username }),
-  verify:         (email, code)               => req('POST',   '/api/auth/verify',          { email, code }),
-  login:          (email, password)           => req('POST',   '/api/auth/login',           { email, password }),
+  register:        (email, password, username) => req('POST',   '/api/auth/register',         { email, password, username }),
+  verify:          (email, code)               => req('POST',   '/api/auth/verify',           { email, code }),
+  login:           (email, password)           => req('POST',   '/api/auth/login',            { email, password }),
+  forgotPassword:  (email)                     => req('POST',   '/api/auth/forgot-password',  { email }),
+  resetPassword:   (email, code, password)     => req('POST',   '/api/auth/reset-password',   { email, code, password }),
   me:             ()                          => req('GET',    '/api/auth/me'),
   updateUsername: (username)                  => req('PUT',    '/api/auth/username',        { username }),
   uploadAvatar:   (formData)                  => xhrSend('/api/auth/avatar', formData),

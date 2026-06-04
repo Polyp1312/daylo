@@ -182,6 +182,8 @@ const migrations = [
   "ALTER TABLE users ADD COLUMN notif_prefs TEXT DEFAULT '{}'",
   'ALTER TABLE users ADD COLUMN searchable INTEGER DEFAULT 1',
   'ALTER TABLE users ADD COLUMN color TEXT',
+  'ALTER TABLE users ADD COLUMN reset_token TEXT',
+  'ALTER TABLE users ADD COLUMN reset_token_expires INTEGER',
 ]
 for (const sql of migrations) {
   try { db.exec(sql) } catch { /* column already exists */ }

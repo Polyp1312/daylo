@@ -509,9 +509,20 @@ export default function RecordView({ onBack, onDone }) {
       recordStream = new MediaStream([...canvasStream.getVideoTracks(), ...audio])
     }
 
-    const mimeType = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4']
-      .find(t => MediaRecorder.isTypeSupported(t)) ?? ''
-    const mr = new MediaRecorder(recordStream, mimeType ? { mimeType } : {})
+    // Pick best codec — VP8 typically gives ~3–4 Mbps at quality parity with VP9
+    const mimeType = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+      'video/mp4',
+    ].find(t => MediaRecorder.isTypeSupported(t)) ?? ''
+
+    // Cap bitrate to 2.5 Mbps video + 128 kbps audio → 60s ≈ 18 MB (was 100–300 MB)
+    const mr = new MediaRecorder(recordStream, {
+      ...(mimeType ? { mimeType } : {}),
+      videoBitsPerSecond: 2_500_000,
+      audioBitsPerSecond: 128_000,
+    })
     mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
     mr.onstop = async () => {
       stopDrawRef.current?.()
