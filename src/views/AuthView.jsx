@@ -122,7 +122,7 @@ function Welcome({ onLogin, onRegister }) {
             <span className="font-black tracking-tighter text-white" style={{ fontSize: 52, lineHeight: 1 }}>daylo</span>
             <span className="font-black text-[#7B61FF]" style={{ fontSize: 52, lineHeight: 1 }}>.</span>
           </div>
-          <p className="text-[#8E8E93] text-base font-medium">Jeden Tag. Eine Person. Dein Leben.</p>
+          <p className="text-[#8E8E93] text-base font-medium">Jeden Tag. Dein Leben. v2 ✓</p>
         </motion.div>
 
         {/* Feature highlights */}
