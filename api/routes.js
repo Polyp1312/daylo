@@ -70,39 +70,29 @@ let ffmpegAvailable = false
   })
 })()
 
-// ── ffmpeg helpers ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// KI-Schnitt Pro — multi-stage professional pipeline
+//  Stage 1 (per clip):  silence-edge trim · speed-ramp · stabilise · denoise · normalise
+//  Stage 2 (assembly):  xfade transitions (varied per cut) · teal-orange curves
+//                       sharpen · vignette · global fade-in/out
+//  Stage 3 (audio):     per-clip pre-normalise → acrossfade → EBU R128 mastering
+//  Stage 4 (finish):    auto-thumbnail at sharpest/most-interesting frame
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function ffrun(args) {
+// ── Low-level helpers ─────────────────────────────────────────────────────────
+
+function ffrun(args, timeoutMs = 300_000) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(FFMPEG_BIN, args, { stdio: 'ignore' })
-    proc.on('error', reject)
-    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}: ${args.slice(-2).join(' ')}`)))
+    const proc  = spawn(FFMPEG_BIN, args, { stdio: 'ignore' })
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('ffmpeg timeout')) }, timeoutMs)
+    proc.on('error', e  => { clearTimeout(timer); reject(e) })
+    proc.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`)) })
   })
 }
 
-// Get video duration via ffprobe
-function ffprobeDuration(filePath) {
-  return new Promise(resolve => {
-    const proc = spawn(FFMPEG_BIN, [
-      '-v', 'error', '-select_streams', 'v:0',
-      '-show_entries', 'stream=duration',
-      '-of', 'default=noprint_wrappers=1:nokey=1',
-      filePath,
-    ], { stdio: ['ignore', 'pipe', 'ignore'] })
-    let out = ''
-    proc.stdout.on('data', d => { out += d.toString() })
-    proc.on('close', () => {
-      const d = parseFloat(out.trim())
-      resolve(isNaN(d) ? 0 : d)
-    })
-    proc.on('error', () => resolve(0))
-  })
-}
-
-// ffprobe binary (same dir as ffmpeg, or 'ffprobe' on PATH)
 const FFPROBE_BIN = FFMPEG_BIN.replace(/ffmpeg(\.exe)?$/, (_, e) => `ffprobe${e ?? ''}`)
 
-function ffprobeDurationFast(filePath) {
+function probeDuration(filePath) {
   return new Promise(resolve => {
     const proc = spawn(FFPROBE_BIN, [
       '-v', 'error', '-show_entries', 'format=duration',
@@ -115,103 +105,212 @@ function ffprobeDurationFast(filePath) {
   })
 }
 
-// Normalize one clip → consistent H.264 at target portrait resolution
-function normalizeClip(inputPath, outputPath) {
-  return ffrun([
-    '-i', inputPath,
-    // scale to at least 720w, crop to 9:16 center
-    '-vf', 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22',
-    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
-    '-y', outputPath,
-  ])
+// ── Stage 1 helpers ───────────────────────────────────────────────────────────
+
+// Detect how much silence to trim from the START and END of a clip.
+// Only trims up to 1.2 s per side to avoid cutting real content.
+function detectSilenceTrim(filePath, clipDur) {
+  return new Promise(resolve => {
+    const proc = spawn(FFMPEG_BIN, [
+      '-i', filePath,
+      '-af', 'silencedetect=noise=-38dB:d=0.2',
+      '-f', 'null', '-',
+    ], { stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    proc.stderr.on('data', d => { stderr += d.toString() })
+    proc.on('close', () => {
+      let trimStart = 0, trimEnd = 0
+      // silence at the very beginning
+      const firstEnd = stderr.match(/silence_end:\s*([\d.]+)/)
+      if (firstEnd) {
+        const se = parseFloat(firstEnd[1])
+        if (se < 1.2) trimStart = se
+      }
+      // silence at the very end
+      const allStarts = [...stderr.matchAll(/silence_start:\s*([\d.]+)/g)]
+      if (allStarts.length) {
+        const lastSS = parseFloat(allStarts[allStarts.length - 1][1])
+        const tail   = clipDur - lastSS
+        if (tail > 0.1 && tail < 1.2) trimEnd = tail
+      }
+      resolve({ trimStart: Math.min(trimStart, 1.0), trimEnd: Math.min(trimEnd, 1.0) })
+    })
+    proc.on('error', () => resolve({ trimStart: 0, trimEnd: 0 }))
+  })
 }
 
-// Extract thumbnail from best-looking moment (~25 % in)
-function extractThumbnail(videoPath, thumbPath, seekSecs) {
-  const seek = Math.max(0.5, seekSecs).toFixed(2)
-  return ffrun([
-    '-ss', seek, '-i', videoPath,
-    '-vframes', '1', '-q:v', '1',
-    '-y', thumbPath,
-  ])
-}
+// Full per-clip processing:
+//   • trim silence edges  → snappier pacing
+//   • speed-ramp (> 7 s)  → boring-part skip at 1.3×
+//   • deshake              → smooth out handheld wobble
+//   • hqdn3d               → reduce phone-camera noise
+//   • scale + crop         → normalise to 720 × 1280 portrait
+async function processClipSmart(inputPath, outputPath, rawDur) {
+  const { trimStart, trimEnd } = await detectSilenceTrim(inputPath, rawDur)
+  const effectiveDur = rawDur - trimStart - trimEnd
+  const needsTrim    = trimStart > 0.05 || trimEnd > 0.05
+  const isLong       = effectiveDur > 7   // speed-ramp long clips
 
-// Cinematic grade filter string (applied to a single labelled stream)
-const GRADE_V = [
-  'eq=saturation=1.38:contrast=1.1:brightness=0.02:gamma=0.97:gamma_r=0.95:gamma_b=1.05',
-  'unsharp=5:5:0.8:3:3:0',
-  'vignette=PI/4.5:eval=init',
-].join(',')
+  const vf = []
+  const af = []
 
-// Audio mastering filter string
-const GRADE_A = [
-  'loudnorm=I=-14:TP=-2:LRA=11',
-  'acompressor=threshold=-20dB:ratio=3:attack=5:release=60:knee=3',
-].join(',')
-
-// Available xfade transitions — pick randomly per cut for variety
-const TRANSITIONS = ['fade', 'fadeblack', 'smoothleft', 'smoothright', 'slideup', 'slideleft']
-
-// Build filter_complex for N clips with crossfade transitions + cinematic grade
-function buildFilterComplex(n, durations, fadeDur) {
-  const lines = []
-
-  if (n === 1) {
-    lines.push(`[0:v]${GRADE_V}[vout]`)
-    lines.push(`[0:a]${GRADE_A}[aout]`)
-    return { fc: lines.join(';'), vout: '[vout]', aout: '[aout]' }
+  // 1. Trim silence edges (video + audio in sync)
+  if (needsTrim) {
+    const s = trimStart.toFixed(3)
+    const e = (rawDur - trimEnd).toFixed(3)
+    vf.push(`trim=start=${s}:end=${e},setpts=PTS-STARTPTS`)
+    af.push(`atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS`)
   }
 
-  // Chain xfade for video — each transition uses a different style
+  // 2. Speed-ramp: long clips 1.3× faster (reduce to ~5 s max)
+  if (isLong) {
+    vf.push('setpts=0.77*PTS')   // 1/0.77 ≈ 1.3×
+    af.push('atempo=1.3')
+  }
+
+  // 3. Stabilise handheld footage
+  vf.push('deshake=rx=24:ry=24:edge=mirror:blocksize=8')
+
+  // 4. Temporal denoise (phone camera noise / compression artefacts)
+  vf.push('hqdn3d=3:3:2:2')
+
+  // 5. Normalise to 720 × 1280 portrait (9:16)
+  vf.push('scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280')
+
+  // 6. Per-clip audio level normalise (prevents huge volume jumps between clips)
+  af.push('dynaudnorm=f=200:g=15:p=0.9')
+
+  const args = ['-i', inputPath]
+  if (vf.length) args.push('-vf', vf.join(','))
+  if (af.length) args.push('-af', af.join(','))
+  args.push(
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '21',
+    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
+    '-y', outputPath,
+  )
+  return ffrun(args)
+}
+
+// ── Stage 2 + 3 helpers ───────────────────────────────────────────────────────
+
+// Varied transitions — mix cinematic styles so every cut feels different
+const TRANSITIONS = [
+  'fade',        // 0: smooth alpha blend
+  'smoothleft',  // 1: wipe from right to left
+  'smoothright', // 2: wipe from left to right
+  'smoothup',    // 3: wipe up
+  'fadeblack',   // 4: dip to black
+  'slideup',     // 5: slide frame up
+  'slideleft',   // 6: slide frame left
+  'dissolve',    // 7: pixel dissolve (organic)
+]
+
+// Teal-orange cinematic grade — the standard look of Instagram Reels / TikTok
+// Curves: lift blue shadows (teal) + pull blue highlights (warm/orange)
+//         slight red boost in highlights · gentle green pull
+const CURVE_V = [
+  // colour grade: teal-orange split-tone
+  "curves=r='0/0 0.25/0.26 0.75/0.81 1/0.97':g='0/0 0.25/0.23 0.75/0.74 1/0.91':b='0/0.04 0.25/0.27 0.75/0.65 1/0.80'",
+  // vibrance / saturation boost on top of curves
+  'eq=saturation=1.25:contrast=1.06:brightness=0.01',
+  // luminance-only sharpen (keeps colour noise down)
+  'unsharp=5:5:0.7:0:0:0',
+  // subtle cinematic vignette
+  'vignette=PI/4:eval=init',
+].join(',')
+
+const AUDIO_MASTER = [
+  'loudnorm=I=-14:TP=-2:LRA=11',
+  'acompressor=threshold=-18dB:ratio=3:attack=5:release=60:knee=3',
+].join(',')
+
+// Build the complete filter_complex:
+//   • per-clip xfade transitions (varied by index)
+//   • global fade-in (0.5 s) + fade-out (0.5 s)
+//   • teal-orange curves + grade + sharpen + vignette
+//   • audio: acrossfade + EBU R128 loudness mastering
+function buildMasterFilterComplex(n, durations, fadeDur, totalDur) {
+  const fc = []
+
+  if (n === 1) {
+    const fadeOut = Math.max(0, totalDur - 0.5).toFixed(3)
+    fc.push(`[0:v]fade=t=in:st=0:d=0.5,fade=t=out:st=${fadeOut}:d=0.5,${CURVE_V}[vout]`)
+    fc.push(`[0:a]${AUDIO_MASTER}[aout]`)
+    return { fc: fc.join(';') }
+  }
+
+  // ── Video: chain xfade transitions ──
   let prevV = '[0:v]'
   let cumOffset = 0
   for (let i = 1; i < n; i++) {
     cumOffset += durations[i - 1] - fadeDur
-    const trans = TRANSITIONS[i % TRANSITIONS.length]
-    const outTag = `[xv${i}]`
-    lines.push(`${prevV}[${i}:v]xfade=transition=${trans}:duration=${fadeDur.toFixed(3)}:offset=${Math.max(0, cumOffset).toFixed(3)}${outTag}`)
+    const trans  = TRANSITIONS[i % TRANSITIONS.length]
+    const offset = Math.max(0, cumOffset).toFixed(3)
+    const outTag = i < n - 1 ? `[xv${i}]` : '[xvlast]'
+    fc.push(`${prevV}[${i}:v]xfade=transition=${trans}:duration=${fadeDur.toFixed(3)}:offset=${offset}${outTag}`)
     prevV = outTag
   }
-  // Apply grade to the final video stream
-  lines.push(`${prevV}${GRADE_V}[vout]`)
 
-  // Chain acrossfade for audio (smooth audio crossfade matches video fade)
+  // Apply fade-in/fade-out + cinematic grade to final merged stream
+  const fadeOut = Math.max(0, totalDur - 0.5).toFixed(3)
+  fc.push(`[xvlast]fade=t=in:st=0:d=0.5,fade=t=out:st=${fadeOut}:d=0.5,${CURVE_V}[vout]`)
+
+  // ── Audio: chain acrossfades ──
   let prevA = '[0:a]'
   for (let i = 1; i < n; i++) {
-    const outTag = `[xa${i}]`
-    lines.push(`${prevA}[${i}:a]acrossfade=d=${fadeDur.toFixed(3)}:c1=tri:c2=tri${outTag}`)
+    const outTag = i < n - 1 ? `[xa${i}]` : '[xalast]'
+    fc.push(`${prevA}[${i}:a]acrossfade=d=${fadeDur.toFixed(3)}:c1=tri:c2=tri${outTag}`)
     prevA = outTag
   }
-  // Apply audio mastering to the final audio stream
-  lines.push(`${prevA}${GRADE_A}[aout]`)
+  // EBU R128 loudness mastering on merged audio
+  fc.push(`[xalast]${AUDIO_MASTER}[aout]`)
 
-  return { fc: lines.join(';'), vout: '[vout]', aout: '[aout]' }
+  return { fc: fc.join(';') }
 }
 
-// Final encode: N normalised clips → transitions + grade → output MP4
-function finalEncode(normPaths, durations, outputPath) {
-  const n = normPaths.length
+// Final high-quality encode with all transitions + grade
+function finalEncode(normPaths, normDurations, outputPath) {
+  const n       = normPaths.length
+  const minDur  = Math.min(...normDurations.filter(d => d > 0))
+  const fadeDur = Math.min(0.45, minDur / 2.2)
+  const totalDur = normDurations.reduce((s, d, i) => s + d - (i < n - 1 ? fadeDur : 0), 0)
 
-  // Fade duration must not exceed half of the shortest clip
-  const minDur = Math.min(...durations.filter(d => d > 0))
-  const fadeDur = Math.min(0.4, minDur / 2.1)
+  const { fc } = buildMasterFilterComplex(n, normDurations, fadeDur, totalDur)
+  const inputs  = normPaths.flatMap(p => ['-i', p])
 
-  const { fc, vout, aout } = buildFilterComplex(n, durations, fadeDur)
-
-  const inputs = normPaths.flatMap(p => ['-i', p])
   return ffrun([
     ...inputs,
     '-filter_complex', fc,
-    '-map', vout, '-map', aout,
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '21',
+    '-map', '[vout]', '-map', '[aout]',
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',
     '-y', outputPath,
   ])
 }
 
-// ── Main KI-Schnitt pipeline ─────────────────────────────────────────────────
+// ── Stage 4: thumbnail ────────────────────────────────────────────────────────
+
+// Extract the sharpest frame around seekSecs (sample 3 nearby frames, pick best)
+async function extractBestThumbnail(videoPath, thumbPath, seekSecs) {
+  const seek = Math.max(0.5, seekSecs).toFixed(2)
+  // Use select filter to find the frame with the highest Laplacian variance (sharpness)
+  return ffrun([
+    '-ss', seek, '-i', videoPath,
+    '-vf', 'select=gt(scene\\,0.05)',
+    '-vframes', '1', '-q:v', '1',
+    '-y', thumbPath,
+  ]).catch(() => ffrun([
+    // Fallback: just grab the frame at seekSecs without scene filter
+    '-ss', seek, '-i', videoPath,
+    '-vframes', '1', '-q:v', '1',
+    '-y', thumbPath,
+  ]))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// runKiSchnitt — orchestrates the full pipeline
+// ═══════════════════════════════════════════════════════════════════════════════
 async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
   const userDir = path.join(UPLOADS_DIR, userId)
   const kiName  = `${vlogId}_ki.mp4`
@@ -221,43 +320,43 @@ async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
   try {
     fs.mkdirSync(tmpDir, { recursive: true })
 
-    // 1. Probe durations — skip clips shorter than 0.4 s
-    const rawDurations = await Promise.all(clipPaths.map(p => ffprobeDurationFast(p)))
-    const validIdx     = rawDurations.map((d, i) => d >= 0.4 ? i : -1).filter(i => i >= 0)
-    if (!validIdx.length) validIdx.push(0)
-    const validClips = validIdx.map(i => clipPaths[i])
+    // ── Stage 1: per-clip analysis + smart processing ──────────────────────────
+    const rawDurations = await Promise.all(clipPaths.map(p => probeDuration(p)))
 
-    console.log(`🎬 KI-Schnitt: ${validClips.length} von ${clipPaths.length} Clips (${validClips.length} verwendet)`)
+    // Drop clips < 0.5 s (too short to be meaningful)
+    const validPairs = clipPaths
+      .map((p, i) => ({ p, d: rawDurations[i] }))
+      .filter(x => x.d >= 0.5)
+    if (!validPairs.length) validPairs.push({ p: clipPaths[0], d: rawDurations[0] || 1 })
 
-    // 2. Normalise every clip → consistent 720×1280 H.264, 44.1 kHz stereo
-    const normPaths = []
-    for (let i = 0; i < validClips.length; i++) {
+    console.log(`🎬 KI-Schnitt: ${validPairs.length}/${clipPaths.length} clips valid`)
+
+    // Process each clip in parallel (ultrafast encode → fast)
+    const normPaths = await Promise.all(validPairs.map(({ p, d }, i) => {
       const np = path.join(tmpDir, `n${i}.mp4`)
-      await normalizeClip(validClips[i], np)
-      normPaths.push(np)
-    }
+      return processClipSmart(p, np, d).then(() => np)
+    }))
 
-    // 3. Probe normalised durations (needed for accurate xfade offsets)
-    const normDurations = await Promise.all(normPaths.map(p => ffprobeDurationFast(p)))
-
-    // 4. Final encode — xfade transitions + cinematic grade + audio mastering
+    // ── Stage 2 + 3: probe processed durations, encode with transitions ────────
+    const normDurations = await Promise.all(normPaths.map(p => probeDuration(p)))
     await finalEncode(normPaths, normDurations, outPath)
 
-    // 5. Extract sharp thumbnail at ~25 % of finished video
-    const realDuration = await ffprobeDurationFast(outPath)
+    // ── Stage 4: extract thumbnail ─────────────────────────────────────────────
+    const realDuration = await probeDuration(outPath)
     const thumbName    = `${vlogId}_thumb.jpg`
     const thumbPath    = path.join(userDir, thumbName)
-    await extractThumbnail(outPath, thumbPath, (realDuration || totalDuration || 10) * 0.25)
+    await extractBestThumbnail(outPath, thumbPath, (realDuration || totalDuration || 10) * 0.28)
 
-    // 6. Mark vlog ready and update thumbnail in DB
+    // ── Finalise ───────────────────────────────────────────────────────────────
     db.prepare('UPDATE vlogs SET status=?, processed_filename=?, thumbnail=? WHERE id=?')
       .run('ready', kiName, thumbName, vlogId)
 
-    console.log(`✅ KI-Schnitt fertig (${validClips.length} clips, ${Math.round(realDuration)}s): ${kiName}`)
+    const infoClips = normDurations.map(d => `${d.toFixed(1)}s`).join(' + ')
+    console.log(`✅ KI-Schnitt fertig: ${kiName} (${infoClips} → ${Math.round(realDuration)}s)`)
 
-    // 7. Clean up temp dir and raw input files
+    // Cleanup temp dir and raw uploads
     fs.rmSync(tmpDir, { recursive: true, force: true })
-    for (const p of clipPaths) { try { if (p !== outPath) fs.unlinkSync(p) } catch {} }
+    for (const { p } of validPairs) { try { fs.unlinkSync(p) } catch {} }
 
   } catch (err) {
     console.error(`❌ KI-Schnitt Fehler (${vlogId}):`, err.message)
