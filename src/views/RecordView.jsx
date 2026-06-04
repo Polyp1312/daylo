@@ -42,8 +42,15 @@ const UPLOAD_STEPS = [
 ]
 
 // ── Title input screen ─────────────────────────────────────────────────────────
+const VIS_OPTIONS = [
+  { value: 'friends', label: '👫 Freunde' },
+  { value: 'group',   label: '👥 Gruppe'  },
+  { value: 'both',    label: '🌍 Beide'   },
+]
+
 function TitleScreen({ firstThumb, onSkip, onConfirm }) {
-  const [title, setTitle] = useState('')
+  const [title,      setTitle]      = useState('')
+  const [visibility, setVisibility] = useState('friends')
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -102,14 +109,34 @@ function TitleScreen({ firstThumb, onSkip, onConfirm }) {
           <AnimatePresence>
             {title.length > 0 && (
               <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                className="text-white/30 text-xs">{title.length}/60</motion.p>
+                className="text-white/30 text-xs mb-4">{title.length}/60</motion.p>
             )}
           </AnimatePresence>
+
+          {/* Visibility picker */}
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+            <p className="text-white/40 text-xs font-semibold uppercase tracking-widest mb-2">Sichtbar für</p>
+            <div className="flex gap-2 justify-center">
+              {VIS_OPTIONS.map(opt => (
+                <motion.button key={opt.value} whileTap={{ scale: 0.92 }}
+                  onClick={() => setVisibility(opt.value)}
+                  className="px-4 py-2 rounded-full text-sm font-bold transition-all"
+                  style={{
+                    background: visibility === opt.value ? 'rgba(123,97,255,0.85)' : 'rgba(255,255,255,0.1)',
+                    border: `1.5px solid ${visibility === opt.value ? '#7B61FF' : 'rgba(255,255,255,0.15)'}`,
+                    color: 'white',
+                    backdropFilter: 'blur(12px)',
+                  }}>
+                  {opt.label}
+                </motion.button>
+              ))}
+            </div>
+          </motion.div>
         </motion.div>
       </div>
 
       {/* Buttons */}
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}
         className="relative px-6 pb-14 flex gap-3">
         <motion.button whileTap={{ scale: 0.96 }} onClick={onSkip}
           className="flex-1 py-4 rounded-2xl font-semibold text-sm"
@@ -121,20 +148,20 @@ function TitleScreen({ firstThumb, onSkip, onConfirm }) {
           }}>
           Überspringen
         </motion.button>
-        <motion.button whileTap={{ scale: 0.96 }} onClick={() => onConfirm(title.trim())}
+        <motion.button whileTap={{ scale: 0.96 }} onClick={() => onConfirm(title.trim(), visibility)}
           className="flex-1 py-4 rounded-2xl font-black text-white text-sm"
           style={{
             background: 'linear-gradient(135deg, #7B61FF, #00D9FF)',
             boxShadow: '0 0 28px rgba(123,97,255,0.5)',
           }}>
-          Speichern →
+          Posten →
         </motion.button>
       </motion.div>
     </motion.div>
   )
 }
 
-function ProcessingScreen({ clips, title, onComplete }) {
+function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) {
   const [step,     setStep]     = useState(0)
   const [progress, setProgress] = useState(0)
   const [error,    setError]    = useState(null)
@@ -154,11 +181,11 @@ function ProcessingScreen({ clips, title, onComplete }) {
           const ext = clips[i].blob?.type?.includes('mp4') ? 'mp4' : 'webm'
           formData.append(`clip_${i}`, clips[i].blob, `clip_${i}.${ext}`)
         }
-        formData.append('duration',  String(Math.round(duration)))
-        formData.append('clipCount', String(clips.length))
-        formData.append('emoji',     randEmoji())
+        formData.append('duration',   String(Math.round(duration)))
+        formData.append('clipCount',  String(clips.length))
+        formData.append('emoji',      randEmoji())
+        formData.append('visibility', visibility)
         if (title)               formData.append('title',     title)
-        // Use first clip's thumbnail as preview while KI processes
         if (clips[0]?.thumbUrl)  formData.append('thumbnail', clips[0].thumbUrl)
 
         const { vlog } = await api.vlogs.upload(formData, pct => {
@@ -369,9 +396,10 @@ export default function RecordView({ onBack, onDone }) {
   const [liveTimer,    setLiveTimer]    = useState(0)
   const [clips,        setClips]        = useState([])
   const [totalSec,     setTotalSec]     = useState(0)
-  const [processing,   setProcessing]   = useState(false)
-  const [showTitle,    setShowTitle]    = useState(false)
-  const [vlogTitle,    setVlogTitle]    = useState('')
+  const [processing,     setProcessing]     = useState(false)
+  const [showTitle,      setShowTitle]      = useState(false)
+  const [vlogTitle,      setVlogTitle]      = useState('')
+  const [vlogVisibility, setVlogVisibility] = useState('friends')
   const [flash,        setFlash]        = useState(false)
   const [switching,    setSwitching]    = useState(false)
   const [filterIdx,    setFilterIdx]    = useState(0)
@@ -605,13 +633,14 @@ export default function RecordView({ onBack, onDone }) {
           <TitleScreen
             firstThumb={clips[0]?.thumbUrl ?? null}
             onSkip={() => { setVlogTitle(''); setShowTitle(false); setProcessing(true) }}
-            onConfirm={t => { setVlogTitle(t); setShowTitle(false); setProcessing(true) }}
+            onConfirm={(t, vis) => { setVlogTitle(t); setVlogVisibility(vis ?? 'friends'); setShowTitle(false); setProcessing(true) }}
           />
         )}
         {processing && (
           <ProcessingScreen
             clips={clips}
             title={vlogTitle}
+            visibility={vlogVisibility}
             onComplete={vlog => {
               // Clear today's clips from IndexedDB after successful upload
               const idbIds = clips.map(c => c.idbId).filter(Boolean)

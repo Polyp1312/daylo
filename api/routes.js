@@ -562,7 +562,8 @@ function formatVlog(row, ownerId, viewerId = null) {
     emoji:     row.emoji,
     date:      new Date(row.created_at).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }),
     createdAt: row.created_at,
-    reactions: rxRows.map(r => ({ type: r.type, count: r.cnt, mine: !!r.mine })),
+    reactions:  rxRows.map(r => ({ type: r.type, count: r.cnt, mine: !!r.mine })),
+    visibility: row.visibility ?? 'friends',
   }
 }
 
@@ -1121,12 +1122,13 @@ export function registerRoutes(api) {
     }
 
     const id         = crypto.randomUUID()
-    const initStatus = ffmpegAvailable ? 'processing' : 'ready'
+    const initStatus  = ffmpegAvailable ? 'processing' : 'ready'
+    const rawVis      = sanitizeText(req.body?.visibility ?? 'friends', 20)
+    const visibility  = ['friends', 'group', 'both', 'private'].includes(rawVis) ? rawVis : 'friends'
 
-    // Use first clip as the stored filename for backward compat
     const mainFilename = path.basename(clipPaths[0])
-    db.prepare(`INSERT INTO vlogs (id,user_id,filename,duration,clip_count,emoji,title,thumbnail,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, me.id, mainFilename, duration, clipCount, emoji, title, thumbName, initStatus, Date.now())
+    db.prepare(`INSERT INTO vlogs (id,user_id,filename,duration,clip_count,emoji,title,thumbnail,status,visibility,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, me.id, mainFilename, duration, clipCount, emoji, title, thumbName, initStatus, visibility, Date.now())
 
     const vlog = db.prepare('SELECT * FROM vlogs WHERE id=?').get(id)
     if (ffmpegAvailable) runKiSchnitt(id, me.id, clipPaths, duration)
@@ -1144,6 +1146,44 @@ export function registerRoutes(api) {
     const rows = db.prepare('SELECT * FROM vlogs WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').all(me.id, limit, offset)
     const total = db.prepare('SELECT COUNT(*) as c FROM vlogs WHERE user_id=?').get(me.id)?.c ?? 0
     res.json({ vlogs: rows.map(v => formatVlog(v, me.id, me.id)), streak: calcStreak(me.id), total })
+  })
+
+  // ── Social feed — vlogs from friends + group members based on visibility ──────
+  api.get('/api/feed', (req, res) => {
+    const me     = requireAuth(req, res)
+    if (!me) return
+    const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit)  || 20))
+    const offset = Math.max(0, parseInt(req.query.offset) || 0)
+
+    const rows = db.prepare(`
+      SELECT DISTINCT v.*, u.username as owner_name, u.avatar as owner_avatar
+      FROM vlogs v
+      JOIN users u ON u.id = v.user_id
+      WHERE v.status = 'ready'
+        AND v.user_id != ?
+        AND (
+          (v.visibility IN ('friends','both') AND v.user_id IN (
+            SELECT friend_id FROM friends WHERE user_id = ?
+          ))
+          OR
+          (v.visibility IN ('group','both') AND v.user_id IN (
+            SELECT gm2.user_id FROM group_members gm1
+            JOIN group_members gm2 ON gm1.group_id = gm2.group_id
+            WHERE gm1.user_id = ? AND gm2.user_id != ?
+          ))
+        )
+      ORDER BY v.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(me.id, me.id, me.id, me.id, limit, offset)
+
+    res.json({
+      vlogs: rows.map(v => ({
+        ...formatVlog(v, v.user_id, me.id),
+        ownerId:     v.user_id,
+        ownerName:   v.owner_name,
+        ownerAvatar: v.owner_avatar,
+      }))
+    })
   })
 
   // Another user's vlogs — accessible to friends OR group members

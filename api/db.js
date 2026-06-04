@@ -184,6 +184,7 @@ const migrations = [
   'ALTER TABLE users ADD COLUMN color TEXT',
   'ALTER TABLE users ADD COLUMN reset_token TEXT',
   'ALTER TABLE users ADD COLUMN reset_token_expires INTEGER',
+  "ALTER TABLE vlogs ADD COLUMN visibility TEXT DEFAULT 'friends'",
 ]
 for (const sql of migrations) {
   try { db.exec(sql) } catch { /* column already exists */ }

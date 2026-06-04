@@ -59,6 +59,29 @@ export async function loadTodayClips() {
   })
 }
 
+export async function loadClipsForDate(dateKey) {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx  = db.transaction(STORE, 'readonly')
+    const req = tx.objectStore(STORE).index('by_date').getAll(dateKey)
+    req.onsuccess = () => {
+      resolve(req.result.map(c => ({
+        idbId: c.id, blob: c.blob, thumbUrl: c.thumbUrl,
+        duration: c.duration, url: URL.createObjectURL(c.blob),
+      })))
+    }
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+function yesterdayKey() {
+  const d = new Date()
+  d.setDate(d.getDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
+
+export const loadYesterdayClips = () => loadClipsForDate(yesterdayKey())
+
 export async function deleteClips(ids) {
   if (!ids?.length) return
   const db = await openDB()

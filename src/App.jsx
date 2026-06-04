@@ -18,6 +18,7 @@ import { useApp }     from './context/AppContext'
 import { useAuth }    from './context/AuthContext'
 import { useToast }   from './components/Toast'
 import { api }        from './lib/api'
+import { deleteClips } from './lib/clipStore'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const pad = n => String(n).padStart(2, '0')
@@ -838,7 +839,8 @@ function StoryRingAvatar({ member, isToday, hasUploadedToday, isOnline, size = 6
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToGroup, onGoToRecord }) {
   const { user } = useAuth()
-  const { groups, getUser, myVlogs, myStreak, requests, notifications, presences, loadMoreVlogs } = useApp()
+  const { groups, getUser, myVlogs, myStreak, requests, notifications, presences, loadMoreVlogs,
+          feedVlogs, yesterdayClips, setYesterdayClips } = useApp()
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore,     setHasMore]     = useState(true)
 
@@ -1349,6 +1351,86 @@ function Dashboard({ countdown, onReveal, onShowQR, onShowNotifications, onGoToG
               </motion.button>
             </div>
           ) : null}
+        </div>
+      )}
+
+      {/* ── Gestern nicht gepostet — Banner ── */}
+      <AnimatePresence>
+        {yesterdayClips.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }} animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mx-5 mb-4 rounded-2xl p-4 flex items-center gap-3"
+            style={{ background: 'rgba(255,159,67,0.12)', border: '1px solid rgba(255,159,67,0.3)' }}>
+            <span className="text-2xl flex-shrink-0">📼</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-bold text-sm">Gestrige Clips nicht hochgeladen</p>
+              <p className="text-[#8E8E93] text-xs mt-0.5">{yesterdayClips.length} Clip{yesterdayClips.length > 1 ? 's' : ''} von gestern</p>
+            </div>
+            <div className="flex gap-2">
+              <motion.button whileTap={{ scale: 0.92 }} onClick={onGoToRecord}
+                className="px-3 py-1.5 rounded-full text-xs font-bold text-white"
+                style={{ background: 'rgba(255,159,67,0.8)' }}>
+                Posten
+              </motion.button>
+              <motion.button whileTap={{ scale: 0.92 }}
+                onClick={() => { deleteClips(yesterdayClips.map(c => c.idbId)).catch(() => {}); setYesterdayClips([]) }}
+                className="px-3 py-1.5 rounded-full text-xs font-bold"
+                style={{ background: 'rgba(255,255,255,0.08)', color: '#8E8E93' }}>
+                Löschen
+              </motion.button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Sozialer Feed ── */}
+      {feedVlogs.length > 0 && (
+        <div className="mb-4">
+          <div className="flex items-center justify-between px-5 mb-3">
+            <span className="text-sm font-bold text-white">Was heute passiert</span>
+            <span className="text-xs text-[#3A3A3C]">{feedVlogs.length} Vlogs</span>
+          </div>
+          <div className="flex gap-3 px-5 overflow-x-auto no-scrollbar pb-1">
+            {feedVlogs.map((v, i) => {
+              const owner = { id: v.ownerId, name: v.ownerName, avatar: v.ownerAvatar }
+              const uploadedToday = new Date(v.createdAt ?? 0).toISOString().slice(0, 10) === today
+              return (
+                <motion.button key={v.id}
+                  initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: i * 0.03 }}
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => onReveal(v.ownerId, v.id)}
+                  className="flex-shrink-0 flex flex-col items-center gap-1.5">
+                  <div className="relative">
+                    <div className="absolute -inset-0.5 rounded-2xl"
+                      style={{ background: uploadedToday ? 'linear-gradient(135deg, #2ECC71, #00D9FF)' : 'transparent', padding: uploadedToday ? 2 : 0 }}>
+                      <div className="w-full h-full rounded-xl bg-[#0A0A0B]" />
+                    </div>
+                    <div className="relative w-[72px] h-[96px] rounded-2xl overflow-hidden z-10"
+                      style={{ background: '#7B61FF15', border: '1.5px solid rgba(255,255,255,0.06)' }}>
+                      {v.thumbnail
+                        ? <img src={v.thumbnail} alt="" className="w-full h-full object-cover" />
+                        : <div className="w-full h-full flex items-center justify-center text-3xl">{v.emoji}</div>}
+                      <div className="absolute bottom-1.5 right-1.5 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center">
+                        <Play size={10} className="text-white ml-0.5" fill="white" />
+                      </div>
+                      {uploadedToday && (
+                        <div className="absolute top-1.5 left-1.5 bg-[#2ECC71] rounded-full px-1.5 py-0.5">
+                          <span className="text-[8px] text-white font-bold">NEU</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <UserAvatar user={owner} size={14} />
+                    <span className="text-[11px] text-[#8E8E93] max-w-[68px] truncate">{v.ownerName}</span>
+                  </div>
+                  <span className="text-[10px] text-[#3A3A3C]">{v.date}</span>
+                </motion.button>
+              )
+            })}
+          </div>
         </div>
       )}
 

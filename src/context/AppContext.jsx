@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useAuth } from './AuthContext'
 import { api, getToken } from '../lib/api'
+import { loadYesterdayClips, deleteClips } from '../lib/clipStore'
 
 const Ctx = createContext(null)
 export const useApp = () => useContext(Ctx)
@@ -34,15 +35,17 @@ export function AppProvider({ children }) {
   const { user } = useAuth()
   const uid = user?.id ?? ''
 
-  const [friends,         setFriends]         = useState([])
-  const [requests,        setRequests]         = useState([])
-  const [groups,          setGroups]           = useState([])
-  const [myVlogs,         setMyVlogs]          = useState([])
-  const [myStreak,        setMyStreak]         = useState(0)
-  const [notifications,   setNotifications]    = useState([])
-  const [presences,       setPresences]        = useState({})
-  const [unreadMessages,  setUnreadMessages]   = useState(0)
-  const [unreadGroupMsgs, setUnreadGroupMsgs]  = useState(0)
+  const [friends,              setFriends]              = useState([])
+  const [requests,             setRequests]             = useState([])
+  const [groups,               setGroups]               = useState([])
+  const [myVlogs,              setMyVlogs]              = useState([])
+  const [myStreak,             setMyStreak]             = useState(0)
+  const [notifications,        setNotifications]        = useState([])
+  const [presences,            setPresences]            = useState({})
+  const [unreadMessages,       setUnreadMessages]       = useState(0)
+  const [unreadGroupMsgs,      setUnreadGroupMsgs]      = useState(0)
+  const [feedVlogs,            setFeedVlogs]            = useState([])
+  const [yesterdayClips,       setYesterdayClips]       = useState([])
 
   const friendsRef       = useRef(friends)
   const notificationsRef = useRef([])
@@ -73,6 +76,9 @@ export function AppProvider({ children }) {
       if (d.vlogs)          setMyVlogs(d.vlogs)
       if (d.streak != null) setMyStreak(d.streak)
     })
+    api.vlogs.feed(20, 0).then(d => { if (d.vlogs) setFeedVlogs(d.vlogs) })
+    // Check for yesterday's unsubmitted clips
+    loadYesterdayClips().then(clips => { if (clips.length > 0) setYesterdayClips(clips) }).catch(() => {})
     api.messages.unreadCount().then(d => { if (d.count != null) setUnreadMessages(d.count) })
     api.groups.unreadCount().then(d => { if (d.count != null) setUnreadGroupMsgs(d.count) })
     api.notifications.list().then(d => { if (d.notifications) setNotifications(d.notifications) })
@@ -305,6 +311,7 @@ export function AppProvider({ children }) {
       getUser, acceptRequest, declineRequest, sendRequest, removeFriend,
       createGroup, deleteGroup, renameGroup, updateGroup, addMember, removeMember, reloadGroups,
       fetchGroupMessages, sendGroupMessage,
+      feedVlogs, yesterdayClips, setYesterdayClips,
       addVlog, deleteVlog, loadMoreVlogs, markNotificationsRead, clearUnread,
     }}>
       {children}

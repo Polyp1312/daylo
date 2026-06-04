@@ -129,6 +129,7 @@ export const api = {
   vlogs: {
     upload:    (formData, onProgress)    => xhrUpload('/api/vlogs/upload', formData, onProgress),
     myList:    (limit = 20, offset = 0)  => req('GET', `/api/vlogs/my?limit=${limit}&offset=${offset}`),
+    feed:      (limit = 20, offset = 0)  => req('GET', `/api/feed?limit=${limit}&offset=${offset}`),
     userList:  (userId, limit = 20, offset = 0) => req('GET', `/api/vlogs/user/${userId}?limit=${limit}&offset=${offset}`),
     delete:    (id)        => req('DELETE', `/api/vlogs/${id}`),
     react:     (id, type)  => req('POST',   `/api/vlogs/${id}/react`,    { type }),
