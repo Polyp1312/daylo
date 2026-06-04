@@ -70,33 +70,161 @@ let ffmpegAvailable = false
   })
 })()
 
-function processVlogFfmpeg(inputPath, outputPath) {
+// ── ffmpeg helpers ────────────────────────────────────────────────────────────
+
+function ffrun(args) {
   return new Promise((resolve, reject) => {
-    const args = [
-      '-i', inputPath,
-      '-vf', 'eq=saturation=1.2:contrast=1.05:brightness=0.02',
-      '-af', 'dynaudnorm=f=150:g=15',
-      '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-movflags', '+faststart',
-      '-y', outputPath,
-    ]
     const proc = spawn(FFMPEG_BIN, args, { stdio: 'ignore' })
     proc.on('error', reject)
-    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`)))
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}: ${args.slice(-2).join(' ')}`)))
   })
 }
 
-async function runKiSchnitt(vlogId, userId, inputPath) {
-  const kiName     = path.basename(inputPath, path.extname(inputPath)) + '_ki.mp4'
-  const outputPath = path.join(path.dirname(inputPath), kiName)
+// Get video duration via ffprobe
+function ffprobeDuration(filePath) {
+  return new Promise(resolve => {
+    const proc = spawn(FFMPEG_BIN, [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      filePath,
+    ], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    proc.stdout.on('data', d => { out += d.toString() })
+    proc.on('close', () => {
+      const d = parseFloat(out.trim())
+      resolve(isNaN(d) ? 0 : d)
+    })
+    proc.on('error', () => resolve(0))
+  })
+}
+
+// ffprobe binary (same dir as ffmpeg, or 'ffprobe' on PATH)
+const FFPROBE_BIN = FFMPEG_BIN.replace(/ffmpeg(\.exe)?$/, (_, e) => `ffprobe${e ?? ''}`)
+
+function ffprobeDurationFast(filePath) {
+  return new Promise(resolve => {
+    const proc = spawn(FFPROBE_BIN, [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', filePath,
+    ], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    proc.stdout.on('data', d => { out += d.toString() })
+    proc.on('close', () => { const d = parseFloat(out.trim()); resolve(isNaN(d) ? 0 : d) })
+    proc.on('error', () => resolve(0))
+  })
+}
+
+// Normalize one clip → consistent H.264 at target portrait resolution
+function normalizeClip(inputPath, outputPath) {
+  return ffrun([
+    '-i', inputPath,
+    // scale to at least 720w, crop to 9:16 center
+    '-vf', 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22',
+    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
+    '-y', outputPath,
+  ])
+}
+
+// Concatenate pre-normalized clips via concat demuxer (stream copy → fast)
+function concatNormalized(normPaths, outputPath) {
+  const listPath = outputPath + '.list'
+  fs.writeFileSync(listPath, normPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'))
+  return ffrun([
+    '-f', 'concat', '-safe', '0', '-i', listPath,
+    '-c', 'copy', '-y', outputPath,
+  ]).finally(() => { try { fs.unlinkSync(listPath) } catch {} })
+}
+
+// Apply cinematic colour grade + loudness normalisation
+function applyGrade(inputPath, outputPath) {
+  return ffrun([
+    '-i', inputPath,
+    '-vf', [
+      // Vivid + slight warmth: boost sat/contrast, push reds up, pull blues slightly
+      'eq=saturation=1.38:contrast=1.1:brightness=0.02:gamma=0.97:gamma_r=0.95:gamma_b=1.05',
+      // Edge sharpen (luma only)
+      'unsharp=5:5:0.8:3:3:0',
+      // Cinematic vignette
+      'vignette=PI/4.5:eval=init',
+    ].join(','),
+    '-af', [
+      // EBU R128 loudness normalisation (-14 LUFS = Spotify / YouTube standard)
+      'loudnorm=I=-14:TP=-2:LRA=11',
+      // Light dynamic compression so quiet/loud clips blend well
+      'acompressor=threshold=-20dB:ratio=3:attack=5:release=60:knee=3',
+    ].join(','),
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '21',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    '-y', outputPath,
+  ])
+}
+
+// Extract thumbnail from best-looking moment (~25 % in)
+function extractThumbnail(videoPath, thumbPath, seekSecs) {
+  const seek = Math.max(0.5, seekSecs).toFixed(2)
+  return ffrun([
+    '-ss', seek, '-i', videoPath,
+    '-vframes', '1', '-q:v', '1',
+    '-y', thumbPath,
+  ])
+}
+
+// ── Main KI-Schnitt pipeline ─────────────────────────────────────────────────
+async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
+  const userDir = path.join(UPLOADS_DIR, userId)
+  const kiName  = `${vlogId}_ki.mp4`
+  const outPath = path.join(userDir, kiName)
+  const tmpDir  = path.join(userDir, `_tmp_${vlogId}`)
+
   try {
-    await processVlogFfmpeg(inputPath, outputPath)
-    db.prepare('UPDATE vlogs SET status=?, processed_filename=? WHERE id=?').run('ready', kiName, vlogId)
-    console.log(`✅ KI-Schnitt fertig: ${kiName}`)
+    fs.mkdirSync(tmpDir, { recursive: true })
+
+    // 1. Probe actual durations and filter out clips < 0.4 s
+    const durations = await Promise.all(clipPaths.map(p => ffprobeDurationFast(p)))
+    const validClips = clipPaths.filter((_, i) => (durations[i] ?? 0) >= 0.4)
+    if (!validClips.length) validClips.push(clipPaths[0])
+
+    // 2. Normalise each clip to consistent 720×1280 H.264
+    const normPaths = []
+    for (let i = 0; i < validClips.length; i++) {
+      const np = path.join(tmpDir, `n${i}.mp4`)
+      await normalizeClip(validClips[i], np)
+      normPaths.push(np)
+    }
+
+    // 3. Concatenate (stream-copy — no quality loss, very fast)
+    const concatPath = path.join(tmpDir, 'concat.mp4')
+    if (normPaths.length === 1) {
+      fs.copyFileSync(normPaths[0], concatPath)
+    } else {
+      await concatNormalized(normPaths, concatPath)
+    }
+
+    // 4. Cinematic grade + audio mastering → final file
+    await applyGrade(concatPath, outPath)
+
+    // 5. Extract sharp thumbnail at ~25 % of video
+    const realDuration = await ffprobeDurationFast(outPath)
+    const thumbName = `${vlogId}_thumb.jpg`
+    const thumbPath = path.join(userDir, thumbName)
+    await extractThumbnail(outPath, thumbPath, (realDuration || totalDuration || 10) * 0.25)
+
+    // 6. Update DB — mark ready + set new thumbnail
+    db.prepare('UPDATE vlogs SET status=?, processed_filename=?, thumbnail=? WHERE id=?')
+      .run('ready', kiName, thumbName, vlogId)
+    console.log(`✅ KI-Schnitt fertig (${validClips.length} clips, ${Math.round(realDuration)}s): ${kiName}`)
+
+    // 7. Cleanup temp dir + raw clip files
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    for (const p of clipPaths) { try { if (p !== outPath) fs.unlinkSync(p) } catch {} }
+
   } catch (err) {
     console.error(`❌ KI-Schnitt Fehler (${vlogId}):`, err.message)
     db.prepare('UPDATE vlogs SET status=? WHERE id=?').run('failed', vlogId)
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
   }
 }
 
@@ -141,11 +269,11 @@ setInterval(() => {
 // ── Multer — vlog upload ──────────────────────────────────────────────────────
 const vlogStorage = multer.diskStorage({
   destination: (_req, _file, cb) => { fs.mkdirSync(UPLOADS_DIR, { recursive: true }); cb(null, UPLOADS_DIR) },
-  filename:    (_req, _file, cb) => cb(null, `${Date.now()}.webm`),
+  filename:    (_req, _file, cb) => cb(null, `${crypto.randomUUID()}_raw${path.extname(_file.originalname) || '.webm'}`),
 })
 const upload = multer({
   storage: vlogStorage,
-  limits: { fileSize: 300 * 1024 * 1024 },
+  limits: { fileSize: 500 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = ['video/webm', 'video/mp4', 'video/quicktime', 'application/octet-stream']
     cb(null, allowed.includes(file.mimetype) || file.originalname.endsWith('.webm'))
@@ -725,47 +853,61 @@ export function registerRoutes(api) {
 
   // ── Vlogs ─────────────────────────────────────────────────────────────────────
 
-  api.post('/api/vlogs/upload', upload.single('video'), async (req, res) => {
+  api.post('/api/vlogs/upload', upload.any(), async (req, res) => {
     const me = requireAuth(req, res)
     if (!me) return
-    if (!req.file) return res.status(400).json({ error: 'Keine Videodatei erhalten.' })
 
     const duration  = Math.max(0, parseFloat(req.body.duration) || 0)
     const clipCount = Math.max(1, parseInt(req.body.clipCount) || 1)
     const emoji     = sanitizeText(req.body.emoji || '🎬', 10)
     const title     = sanitizeText(req.body.title || '', 100) || null
-    const thumbnail = req.body.thumbnail ?? null
 
-    const id      = crypto.randomUUID()
     const userDir = path.join(UPLOADS_DIR, me.id)
     fs.mkdirSync(userDir, { recursive: true })
 
-    const finalName = req.file.filename
-    const srcPath   = req.file.path
-    const destPath  = path.join(userDir, finalName)
-    try {
-      if (srcPath !== destPath) fs.renameSync(srcPath, destPath)
-    } catch (err) {
-      try { fs.unlinkSync(srcPath) } catch {}
-      return res.status(500).json({ error: 'Video konnte nicht gespeichert werden.' })
+    // Collect uploaded clip files: new multi-clip format (clip_0, clip_1, …)
+    // or legacy single 'video' field
+    const files = req.files ?? []
+    let clipFiles = files
+      .filter(f => /^clip_\d+$/.test(f.fieldname))
+      .sort((a, b) => parseInt(a.fieldname.split('_')[1]) - parseInt(b.fieldname.split('_')[1]))
+
+    if (!clipFiles.length) {
+      const single = files.find(f => f.fieldname === 'video')
+      if (!single) return res.status(400).json({ error: 'Keine Videodatei erhalten.' })
+      clipFiles = [single]
     }
 
-    // Save thumbnail from base64 if provided
+    // Move all clips into the user dir
+    const clipPaths = []
+    for (const f of clipFiles) {
+      const dest = path.join(userDir, f.filename)
+      try { if (f.path !== dest) fs.renameSync(f.path, dest) } catch { try { fs.unlinkSync(f.path) } catch {} }
+      clipPaths.push(dest)
+    }
+    if (!clipPaths.length) return res.status(400).json({ error: 'Keine Videodatei erhalten.' })
+
+    // Save client thumbnail (base64) as fallback while KI processes
     let thumbName = null
-    if (thumbnail && typeof thumbnail === 'string' && thumbnail.startsWith('data:image/')) {
+    const thumbB64 = req.body.thumbnail ?? null
+    if (thumbB64 && typeof thumbB64 === 'string' && thumbB64.startsWith('data:image/')) {
       try {
-        const b64 = thumbnail.replace(/^data:image\/\w+;base64,/, '')
-        thumbName = finalName.replace('.webm', '_thumb.jpg')
+        const b64 = thumbB64.replace(/^data:image\/\w+;base64,/, '')
+        thumbName = `${crypto.randomUUID()}_thumb.jpg`
         fs.writeFileSync(path.join(userDir, thumbName), Buffer.from(b64, 'base64'))
       } catch {}
     }
 
+    const id         = crypto.randomUUID()
     const initStatus = ffmpegAvailable ? 'processing' : 'ready'
+
+    // Use first clip as the stored filename for backward compat
+    const mainFilename = path.basename(clipPaths[0])
     db.prepare(`INSERT INTO vlogs (id,user_id,filename,duration,clip_count,emoji,title,thumbnail,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, me.id, finalName, duration, clipCount, emoji, title, thumbName, initStatus, Date.now())
+      .run(id, me.id, mainFilename, duration, clipCount, emoji, title, thumbName, initStatus, Date.now())
 
     const vlog = db.prepare('SELECT * FROM vlogs WHERE id=?').get(id)
-    if (ffmpegAvailable) runKiSchnitt(id, me.id, destPath)
+    if (ffmpegAvailable) runKiSchnitt(id, me.id, clipPaths, duration)
     notifyFriends(me.id, me.username ?? me.email).catch(() => {})
 
     res.json({ success: true, vlog: formatVlog(vlog, me.id, me.id) })

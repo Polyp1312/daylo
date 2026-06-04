@@ -143,18 +143,22 @@ function ProcessingScreen({ clips, title, onComplete }) {
     let cancelled = false
     const run = async () => {
       try {
-        const mimeType = clips[0]?.blob?.type || 'video/webm'
-        const combined = new Blob(clips.map(c => c.blob), { type: mimeType })
         if (cancelled) return
 
         setStep(1)
-        const duration  = clips.reduce((s, c) => s + (c.duration ?? 0), 0)
-        const formData  = new FormData()
-        formData.append('video',     combined, 'vlog.webm')
+        const duration = clips.reduce((s, c) => s + (c.duration ?? 0), 0)
+        const formData = new FormData()
+
+        // Send each clip individually — server does proper ffmpeg concat + grade
+        for (let i = 0; i < clips.length; i++) {
+          const ext = clips[i].blob?.type?.includes('mp4') ? 'mp4' : 'webm'
+          formData.append(`clip_${i}`, clips[i].blob, `clip_${i}.${ext}`)
+        }
         formData.append('duration',  String(Math.round(duration)))
         formData.append('clipCount', String(clips.length))
         formData.append('emoji',     randEmoji())
         if (title)               formData.append('title',     title)
+        // Use first clip's thumbnail as preview while KI processes
         if (clips[0]?.thumbUrl)  formData.append('thumbnail', clips[0].thumbUrl)
 
         const { vlog } = await api.vlogs.upload(formData, pct => {
