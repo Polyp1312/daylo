@@ -144,8 +144,8 @@ function detectSilenceTrim(filePath, clipDur) {
 //   • speed-ramp (> 7 s)  → boring-part skip at 1.3×
 //   • deshake              → smooth out handheld wobble
 //   • hqdn3d               → reduce phone-camera noise
-//   • scale + crop         → normalise to 720 × 1280 portrait
-async function processClipSmart(inputPath, outputPath, rawDur) {
+//   • scale + crop         → normalise to 720×1280 (free) or 1080×1920 (premium HD)
+async function processClipSmart(inputPath, outputPath, rawDur, hd = false) {
   const { trimStart, trimEnd } = await detectSilenceTrim(inputPath, rawDur)
   const effectiveDur = rawDur - trimStart - trimEnd
   const needsTrim    = trimStart > 0.05 || trimEnd > 0.05
@@ -174,8 +174,12 @@ async function processClipSmart(inputPath, outputPath, rawDur) {
   // 4. Temporal denoise (phone camera noise / compression artefacts)
   vf.push('hqdn3d=3:3:2:2')
 
-  // 5. Normalise to 720 × 1280 portrait (9:16)
-  vf.push('scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280')
+  // 5. Normalise to 720×1280 (free) or 1080×1920 (premium HD) portrait 9:16
+  if (hd) {
+    vf.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
+  } else {
+    vf.push('scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280')
+  }
 
   // 6. Per-clip audio level normalise (prevents huge volume jumps between clips)
   af.push('dynaudnorm=f=200:g=15:p=0.9')
@@ -269,7 +273,7 @@ function buildMasterFilterComplex(n, durations, fadeDur, totalDur) {
 }
 
 // Final high-quality encode with all transitions + grade
-function finalEncode(normPaths, normDurations, outputPath) {
+function finalEncode(normPaths, normDurations, outputPath, hd = false) {
   const n       = normPaths.length
   const minDur  = Math.min(...normDurations.filter(d => d > 0))
   const fadeDur = Math.min(0.45, minDur / 2.2)
@@ -282,7 +286,7 @@ function finalEncode(normPaths, normDurations, outputPath) {
     ...inputs,
     '-filter_complex', fc,
     '-map', '[vout]', '-map', '[aout]',
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
+    '-c:v', 'libx264', '-preset', hd ? 'medium' : 'fast', '-crf', hd ? '18' : '20',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',
     '-y', outputPath,
@@ -311,7 +315,7 @@ async function extractBestThumbnail(videoPath, thumbPath, seekSecs) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // runKiSchnitt — orchestrates the full pipeline
 // ═══════════════════════════════════════════════════════════════════════════════
-async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
+async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration, hd = false) {
   const userDir = path.join(UPLOADS_DIR, userId)
   const kiName  = `${vlogId}_ki.mp4`
   const outPath = path.join(userDir, kiName)
@@ -334,12 +338,12 @@ async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
     // Process each clip in parallel (ultrafast encode → fast)
     const normPaths = await Promise.all(validPairs.map(({ p, d }, i) => {
       const np = path.join(tmpDir, `n${i}.mp4`)
-      return processClipSmart(p, np, d).then(() => np)
+      return processClipSmart(p, np, d, hd).then(() => np)
     }))
 
     // ── Stage 2 + 3: probe processed durations, encode with transitions ────────
     const normDurations = await Promise.all(normPaths.map(p => probeDuration(p)))
-    await finalEncode(normPaths, normDurations, outPath)
+    await finalEncode(normPaths, normDurations, outPath, hd)
 
     // ── Stage 4: extract thumbnail ─────────────────────────────────────────────
     const realDuration = await probeDuration(outPath)
@@ -574,11 +578,31 @@ function calcStreak(userId) {
     FROM vlogs WHERE user_id=? ORDER BY d DESC
   `).all(userId).map(r => r.d)
   if (!dates.length) return 0
+
+  const today        = new Date().toISOString().slice(0, 10)
+  const currentMonth = today.slice(0, 7)
+
+  // Premium streak freeze: if today's vlog is missing but yesterday's is present,
+  // auto-consume one monthly freeze so the streak survives.
+  let effectiveDates = dates
+  if (dates[0] !== today) {
+    const yesterday = new Date()
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+    const yesterdayStr = yesterday.toISOString().slice(0, 10)
+    if (dates[0] === yesterdayStr) {
+      const u = db.prepare('SELECT premium, streak_freeze_month FROM users WHERE id=?').get(userId)
+      if (u?.premium && u?.streak_freeze_month !== currentMonth) {
+        effectiveDates = [today, ...dates]
+        db.prepare('UPDATE users SET streak_freeze_month=? WHERE id=?').run(currentMonth, userId)
+      }
+    }
+  }
+
   let streak = 0
-  for (let i = 0; i < dates.length; i++) {
+  for (let i = 0; i < effectiveDates.length; i++) {
     const expected = new Date()
     expected.setUTCDate(expected.getUTCDate() - i)
-    if (dates[i] === expected.toISOString().slice(0, 10)) streak++
+    if (effectiveDates[i] === expected.toISOString().slice(0, 10)) streak++
     else break
   }
   return streak
@@ -795,7 +819,7 @@ export function registerRoutes(api) {
     if (!auth?.startsWith('Bearer ')) return res.status(401).json({ error: 'Nicht autorisiert.' })
     try {
       const user = jwt.verify(auth.slice(7), JWT_SECRET)
-      const fresh = db.prepare('SELECT id,email,username,verified,avatar,bio,notif_prefs,searchable,color,created_at FROM users WHERE id=?').get(user.id)
+      const fresh = db.prepare('SELECT id,email,username,verified,avatar,bio,notif_prefs,searchable,color,premium,streak_freeze_month,created_at FROM users WHERE id=?').get(user.id)
       if (!fresh) return res.status(404).json({ error: 'Benutzer nicht gefunden.' })
       res.json({ user: { ...fresh, verified: !!fresh.verified, searchable: fresh.searchable !== 0 } })
     } catch { res.status(401).json({ error: 'Session abgelaufen.' }) }
@@ -915,7 +939,7 @@ export function registerRoutes(api) {
     const me = requireAuth(req, res)
     if (!me) return
     const targetId = req.params.id
-    const u = db.prepare('SELECT id, username, avatar, created_at FROM users WHERE id=? AND verified=1').get(targetId)
+    const u = db.prepare('SELECT id, username, avatar, bio, premium, created_at FROM users WHERE id=? AND verified=1').get(targetId)
     if (!u) return res.status(404).json({ error: 'Nicht gefunden.' })
     if (targetId !== me.id) {
       const areFriends = db.prepare('SELECT 1 FROM friends WHERE user_id=? AND friend_id=?').get(me.id, targetId)
@@ -1080,6 +1104,16 @@ export function registerRoutes(api) {
     const me = requireAuth(req, res)
     if (!me) return
 
+    // Enforce vlog archive limit for free users (30 max)
+    const freshUser = db.prepare('SELECT premium FROM users WHERE id=?').get(me.id)
+    if (!freshUser?.premium) {
+      const vlogCount = db.prepare('SELECT COUNT(*) as c FROM vlogs WHERE user_id=?').get(me.id)?.c ?? 0
+      if (vlogCount >= 30) {
+        return res.status(403).json({ error: 'Vlog-Limit erreicht. Upgrade auf Premium für unbegrenzten Speicher.' })
+      }
+    }
+    const hd = !!freshUser?.premium
+
     const duration  = Math.max(0, parseFloat(req.body.duration) || 0)
     const clipCount = Math.max(1, parseInt(req.body.clipCount) || 1)
     const emoji     = sanitizeText(req.body.emoji || '🎬', 10)
@@ -1131,7 +1165,7 @@ export function registerRoutes(api) {
       .run(id, me.id, mainFilename, duration, clipCount, emoji, title, thumbName, initStatus, visibility, Date.now())
 
     const vlog = db.prepare('SELECT * FROM vlogs WHERE id=?').get(id)
-    if (ffmpegAvailable) runKiSchnitt(id, me.id, clipPaths, duration)
+    if (ffmpegAvailable) runKiSchnitt(id, me.id, clipPaths, duration, hd)
     notifyFriends(me.id, me.username ?? me.email).catch(() => {})
 
     res.json({ success: true, vlog: formatVlog(vlog, me.id, me.id) })
@@ -1207,6 +1241,71 @@ export function registerRoutes(api) {
     const rows  = db.prepare('SELECT * FROM vlogs WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').all(targetId, limit, offset)
     const total = db.prepare('SELECT COUNT(*) as c FROM vlogs WHERE user_id=?').get(targetId)?.c ?? 0
     res.json({ vlogs: rows.map(v => formatVlog(v, targetId, me.id)), streak: calcStreak(targetId), total })
+  })
+
+  // ── Year Review (premium only) ────────────────────────────────────────────────
+  api.get('/api/users/year-review', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const freshUser = db.prepare('SELECT premium FROM users WHERE id=?').get(me.id)
+    if (!freshUser?.premium) return res.status(403).json({ error: 'Premium erforderlich.' })
+
+    const year = parseInt(req.query.year) || new Date().getFullYear()
+    const from = new Date(`${year}-01-01T00:00:00.000Z`).getTime()
+    const to   = new Date(`${year + 1}-01-01T00:00:00.000Z`).getTime()
+
+    const vlogs = db.prepare(`
+      SELECT v.id, v.title, v.thumbnail, v.duration, v.created_at,
+             (SELECT COUNT(*) FROM reactions r WHERE r.vlog_id = v.id) as reaction_count
+      FROM vlogs v
+      WHERE v.user_id=? AND v.created_at>=? AND v.created_at<? AND v.status='ready'
+      ORDER BY v.created_at ASC
+    `).all(me.id, from, to)
+
+    const totalVlogs = vlogs.length
+    const totalReactions = vlogs.reduce((s, v) => s + (v.reaction_count ?? 0), 0)
+
+    // Longest streak in the year
+    const dates = db.prepare(`
+      SELECT DISTINCT strftime('%Y-%m-%d', created_at/1000, 'unixepoch') as d
+      FROM vlogs WHERE user_id=? AND created_at>=? AND created_at<? ORDER BY d ASC
+    `).all(me.id, from, to).map(r => r.d)
+    let longestStreak = 0, cur = 0
+    for (let i = 0; i < dates.length; i++) {
+      if (i === 0) { cur = 1; continue }
+      const prev = new Date(dates[i - 1]); prev.setUTCDate(prev.getUTCDate() + 1)
+      cur = prev.toISOString().slice(0, 10) === dates[i] ? cur + 1 : 1
+      if (cur > longestStreak) longestStreak = cur
+    }
+    if (dates.length === 1) longestStreak = 1
+
+    // Best month
+    const monthCounts = {}
+    for (const d of dates) {
+      const m = d.slice(0, 7)
+      monthCounts[m] = (monthCounts[m] ?? 0) + 1
+    }
+    const bestMonthKey = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
+    const MONTHS = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember']
+    const bestMonth = bestMonthKey ? MONTHS[parseInt(bestMonthKey.slice(5)) - 1] : null
+
+    // Most-reacted vlog
+    const topVlog = vlogs.sort((a, b) => b.reaction_count - a.reaction_count)[0] ?? null
+    const userId  = me.id
+
+    res.json({
+      year,
+      totalVlogs,
+      totalReactions,
+      longestStreak,
+      bestMonth,
+      mostReactedVlog: topVlog ? {
+        id:        topVlog.id,
+        title:     topVlog.title,
+        thumbnail: topVlog.thumbnail ? `/uploads/vlogs/${userId}/${topVlog.thumbnail}` : null,
+        reactions: topVlog.reaction_count,
+      } : null,
+    })
   })
 
   // Toggle reaction
@@ -1383,6 +1482,15 @@ export function registerRoutes(api) {
     const name  = sanitizeText(req.body?.name ?? '', 50)
     const emoji = sanitizeText(req.body?.emoji || '👥', 10)
     if (!name) return res.status(400).json({ error: 'Kein Name.' })
+
+    // Enforce group limit for free users (3 max)
+    const freshUser = db.prepare('SELECT premium FROM users WHERE id=?').get(me.id)
+    if (!freshUser?.premium) {
+      const groupCount = db.prepare('SELECT COUNT(*) as c FROM group_members WHERE user_id=?').get(me.id)?.c ?? 0
+      if (groupCount >= 3) {
+        return res.status(403).json({ error: 'Gruppen-Limit erreicht. Upgrade auf Premium für unbegrenzte Gruppen.' })
+      }
+    }
     const id    = crypto.randomUUID()
     const today = new Date().toISOString().slice(0, 10)
     db.transaction(() => {

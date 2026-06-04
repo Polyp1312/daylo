@@ -4,7 +4,7 @@ import {
   Settings, LogOut, UserPlus, Trash2, Check, X, ChevronLeft, ChevronRight,
   Search, AtSign, Save, Camera, Edit3, Play, MessageCircle, Clock,
   Mail, Lock, CalendarDays, Bell, Eye, EyeOff, Shield, Info,
-  Video, AlertTriangle, Palette, Users, KeyRound,
+  Video, AlertTriangle, Palette, Users, KeyRound, Sparkles, Star,
 } from 'lucide-react'
 import { useApp, formatUser } from '../context/AppContext'
 import { useAuth } from '../context/AuthContext'
@@ -326,6 +326,8 @@ function SettingsScreen({ onBack }) {
   const fileRef = useRef(null)
 
   const [subView, setSubView] = useState('main')
+  const [yearReview, setYearReview] = useState(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
 
   // Profile fields
   const [username,   setUsername]   = useState(user?.username ?? '')
@@ -549,6 +551,99 @@ function SettingsScreen({ onBack }) {
             </div>
           </div>
 
+          {/* ─ Premium ─ */}
+          {user?.premium ? (
+            <SettingsSection title="Premium">
+              <div className="px-4 py-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-2xl">💎</span>
+                  <div>
+                    <p className="text-white font-black text-sm">Premium-Mitglied</p>
+                    <p className="text-[#8E8E93] text-xs mt-0.5">Du genießt alle Premium-Features</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  {[
+                    { label: 'HD-Video', desc: '1080p KI-Schnitt' },
+                    { label: '90s Aufnahme', desc: 'Täglich' },
+                    { label: 'Unbegrenzte Vlogs', desc: 'Archiv' },
+                    { label: '10 Filter', desc: 'Alle Styles' },
+                  ].map(f => (
+                    <div key={f.label} className="rounded-xl px-3 py-2.5"
+                      style={{ background: 'rgba(123,97,255,0.1)', border: '1px solid rgba(123,97,255,0.2)' }}>
+                      <p className="text-white text-xs font-bold">{f.label}</p>
+                      <p className="text-[#8E8E93] text-[10px]">{f.desc}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Streak freeze status */}
+                <div className="rounded-xl px-3 py-2.5 mb-2"
+                  style={{ background: 'rgba(46,204,113,0.08)', border: '1px solid rgba(46,204,113,0.2)' }}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white text-xs font-bold">🛡️ Streak-Freeze</p>
+                      <p className="text-[#8E8E93] text-[10px] mt-0.5">1× pro Monat automatisch</p>
+                    </div>
+                    <span className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{
+                        background: user.streak_freeze_month === new Date().toISOString().slice(0,7)
+                          ? 'rgba(255,149,0,0.15)' : 'rgba(46,204,113,0.15)',
+                        color: user.streak_freeze_month === new Date().toISOString().slice(0,7)
+                          ? '#FF9F43' : '#2ECC71',
+                      }}>
+                      {user.streak_freeze_month === new Date().toISOString().slice(0,7) ? 'Verbraucht' : 'Verfügbar'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Year review button */}
+                <motion.button whileTap={{ scale: 0.97 }}
+                  onClick={async () => {
+                    if (reviewLoading) return
+                    setReviewLoading(true)
+                    const d = await api.users.yearReview().catch(e => ({ error: e.message }))
+                    setReviewLoading(false)
+                    if (d.error) { toast?.show(d.error, 'error'); return }
+                    setYearReview(d)
+                    setSubView('year-review')
+                  }}
+                  className="w-full py-3 rounded-2xl font-black text-white text-sm flex items-center justify-center gap-2"
+                  style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)' }}>
+                  {reviewLoading
+                    ? <><div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" /> Laden…</>
+                    : <><Star size={14} /> {new Date().getFullYear()} Jahres-Rückblick</>
+                  }
+                </motion.button>
+              </div>
+            </SettingsSection>
+          ) : (
+            <SettingsSection title="Premium">
+              <div className="px-4 py-4">
+                <p className="text-white font-black text-sm mb-1">Upgrade auf Premium</p>
+                <p className="text-[#8E8E93] text-xs mb-3">HD-Videos · 90s · unbegrenzte Vlogs · alle Filter · Jahres-Rückblick</p>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  {[
+                    { label: '🎬 HD 1080p', desc: 'statt 720p' },
+                    { label: '⏱️ 90s', desc: 'statt 60s' },
+                    { label: '📁 Unbegrenzt', desc: 'statt 30 Vlogs' },
+                    { label: '✨ 10 Filter', desc: 'statt 5' },
+                  ].map(f => (
+                    <div key={f.label} className="rounded-xl px-3 py-2.5"
+                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                      <p className="text-white text-xs font-bold">{f.label}</p>
+                      <p className="text-[#8E8E93] text-[10px]">{f.desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="rounded-xl px-3 py-2.5 text-center"
+                  style={{ background: 'rgba(123,97,255,0.1)', border: '1px solid rgba(123,97,255,0.2)' }}>
+                  <p className="text-[#8E8E93] text-xs">💎 Premium-Badge sichtbar für Freunde</p>
+                </div>
+              </div>
+            </SettingsSection>
+          )}
+
           {/* ─ Konto ─ */}
           <SettingsSection title="Konto">
             <SettingsRow icon={Mail} iconBg="rgba(0,217,255,0.15)" iconColor="#00D9FF"
@@ -634,7 +729,90 @@ function SettingsScreen({ onBack }) {
       {subView === 'delete-account' && (
         <DeleteAccountScreen key="delete-acc" onBack={() => setSubView('main')} onDeleted={signOut} />
       )}
+      {subView === 'year-review' && yearReview && (
+        <YearReviewScreen key="year-review" data={yearReview} onBack={() => setSubView('main')} />
+      )}
     </AnimatePresence>
+  )
+}
+
+// ── Year Review screen ────────────────────────────────────────────────────────
+function YearReviewScreen({ data, onBack }) {
+  const MONTHS = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember']
+  const stats = [
+    { emoji: '🎬', value: data.totalVlogs,    label: 'Vlogs gedreht' },
+    { emoji: '🔥', value: data.longestStreak, label: 'Längster Streak' },
+    { emoji: '❤️', value: data.totalReactions,label: 'Reaktionen erhalten' },
+    { emoji: '📅', value: data.bestMonth ?? '—', label: 'Stärkster Monat' },
+  ]
+
+  return (
+    <motion.div key="year-review" {...slide} className="min-h-screen pb-28 overflow-x-hidden"
+      style={{ background: 'radial-gradient(ellipse at 50% 0%, rgba(123,97,255,0.22) 0%, #0A0A0B 55%)' }}>
+
+      {/* Header */}
+      <div className="flex items-center gap-3 px-5 pt-14 pb-6">
+        <motion.button whileTap={{ scale: 0.88 }} onClick={onBack}
+          className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
+          <ChevronLeft size={18} className="text-white" />
+        </motion.button>
+        <div>
+          <span className="text-xl font-black text-white">{data.year} Jahres-Rückblick</span>
+          <p className="text-[#8E8E93] text-xs mt-0.5">Dein Jahr in Zahlen</p>
+        </div>
+      </div>
+
+      {/* Hero */}
+      <div className="px-5 mb-6">
+        <div className="rounded-3xl p-6 text-center relative overflow-hidden"
+          style={{ background: 'linear-gradient(135deg, rgba(123,97,255,0.25), rgba(0,217,255,0.12))', border: '1px solid rgba(123,97,255,0.3)' }}>
+          <div className="absolute inset-0 opacity-10"
+            style={{ background: 'radial-gradient(circle at 50% 0%, white 0%, transparent 70%)' }} />
+          <div className="text-5xl mb-3">⭐</div>
+          <h2 className="text-white font-black text-2xl mb-1">{data.totalVlogs} Vlogs</h2>
+          <p className="text-[#8E8E93] text-sm">in {data.year} festgehalten</p>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div className="px-5 grid grid-cols-2 gap-3 mb-6">
+        {stats.map((s, i) => (
+          <motion.div key={s.label}
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.08 }}
+            className="rounded-2xl p-4 text-center"
+            style={{ background: 'rgba(20,20,21,0.9)', border: '1px solid rgba(255,255,255,0.07)' }}>
+            <div className="text-3xl mb-1">{s.emoji}</div>
+            <div className="text-white font-black text-2xl leading-none mb-1">
+              {typeof s.value === 'number' ? s.value.toLocaleString('de-DE') : s.value}
+            </div>
+            <div className="text-[#8E8E93] text-[11px]">{s.label}</div>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* Most reacted vlog */}
+      {data.mostReactedVlog && (
+        <div className="px-5 mb-6">
+          <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-2 px-1">Meist abgestimmter Vlog</p>
+          <div className="rounded-2xl overflow-hidden flex gap-3 p-3"
+            style={{ background: 'rgba(20,20,21,0.9)', border: '1px solid rgba(255,255,255,0.07)' }}>
+            {data.mostReactedVlog.thumbnail && (
+              <img src={data.mostReactedVlog.thumbnail} alt=""
+                className="w-20 h-28 object-cover rounded-xl flex-shrink-0" />
+            )}
+            <div className="flex-1 flex flex-col justify-center min-w-0">
+              <p className="text-white font-bold text-sm truncate mb-1">
+                {data.mostReactedVlog.title || 'Kein Titel'}
+              </p>
+              <p className="text-[#8E8E93] text-xs">
+                ❤️ {data.mostReactedVlog.reactions} Reaktionen
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </motion.div>
   )
 }
 
@@ -803,7 +981,10 @@ function FriendProfileScreen({ friend, onBack, onMessage, onReveal }) {
             style={{ background: isOnline ? '#2ECC71' : '#3A3A3C' }} />
         </div>
         <div className="text-center">
-          <h2 className="text-white font-black text-[22px]">{friend.name}</h2>
+          <div className="flex items-center justify-center gap-2">
+            <h2 className="text-white font-black text-[22px]">{friend.name}</h2>
+            {profile?.user?.premium && <span className="text-lg leading-none">💎</span>}
+          </div>
           <p className="text-xs font-semibold mt-1" style={{ color: isOnline ? '#2ECC71' : '#8E8E93' }}>
             {isOnline ? '● Online' : '○ Offline'}
           </p>
@@ -972,7 +1153,12 @@ function ProfileMain({ onAddFriend, onSettings, onReveal, onOpenMessage, onViewF
         </div>
 
         <div className="px-5">
-          <h2 className="text-white font-black text-[22px] leading-tight">{displayName}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-white font-black text-[22px] leading-tight">{displayName}</h2>
+            {user?.premium && (
+              <span className="text-lg leading-none" title="Premium-Mitglied">💎</span>
+            )}
+          </div>
           {user?.bio
             ? <p className="text-[#8E8E93] text-sm mt-0.5 mb-0.5">{user.bio}</p>
             : <p className="text-[#8E8E93] text-sm mt-0.5">{displayEmail}</p>

@@ -30,7 +30,7 @@ function colorPair(id = '') {
   return PALETTE[h % PALETTE.length]
 }
 
-export default function UserAvatar({ user, size = 40, className = '', fontSize, border, rounded = 'full' }) {
+export default function UserAvatar({ user, size = 40, className = '', fontSize, border, rounded = 'full', showPremium = false }) {
   const [imgError, setImgError] = useState(false)
   const url  = avatarUrl(user?.avatar)
   const fs   = fontSize ?? Math.max(10, Math.round(size * 0.35))
@@ -43,19 +43,29 @@ export default function UserAvatar({ user, size = 40, className = '', fontSize, 
     ...(border ? { border } : {}),
   }
 
-  if (url && !imgError) {
-    return (
-      <img
-        src={url}
-        alt={user?.name ?? ''}
-        onError={() => setImgError(true)}
-        style={style}
-        className={`${roundedClass} object-cover ${className}`}
-      />
-    )
-  }
+  const badge = showPremium && user?.premium ? (
+    <span
+      style={{
+        position: 'absolute',
+        bottom: -2, right: -2,
+        fontSize: Math.max(8, Math.round(size * 0.28)),
+        lineHeight: 1,
+        filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))',
+      }}
+    >
+      💎
+    </span>
+  ) : null
 
-  return (
+  const inner = (url && !imgError) ? (
+    <img
+      src={url}
+      alt={user?.name ?? ''}
+      onError={() => setImgError(true)}
+      style={style}
+      className={`${roundedClass} object-cover ${className}`}
+    />
+  ) : (
     <div
       style={{
         ...style,
@@ -65,6 +75,15 @@ export default function UserAvatar({ user, size = 40, className = '', fontSize, 
       className={`${roundedClass} flex items-center justify-center text-white font-black select-none ${className}`}
     >
       {(user?.initials ?? user?.name?.slice(0, 2)?.toUpperCase() ?? '?')}
+    </div>
+  )
+
+  if (!badge) return inner
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+      {inner}
+      {badge}
     </div>
   )
 }

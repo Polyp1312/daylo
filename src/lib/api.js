@@ -114,7 +114,8 @@ export const api = {
     remove:        (id)          => req('DELETE', `/api/friends/${id}`),
   },
   users: {
-    profile: (userId) => req('GET', `/api/users/${userId}/profile`),
+    profile:    (userId) => req('GET', `/api/users/${userId}/profile`),
+    yearReview: (year)   => req('GET', `/api/users/year-review?year=${year ?? new Date().getFullYear()}`),
   },
   presence: {
     ping: ()    => req('POST', '/api/presence/ping'),

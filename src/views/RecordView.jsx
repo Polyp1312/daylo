@@ -1,11 +1,14 @@
 // v8 — 24h clip collection + tap-to-toggle record button
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, RefreshCw, Check, Sparkles, AlertCircle, Pencil } from 'lucide-react'
+import { X, RefreshCw, Check, Sparkles, AlertCircle, Pencil, Lock } from 'lucide-react'
 import { api } from '../lib/api'
 import { saveClip, loadTodayClips, deleteClips } from '../lib/clipStore'
+import { useAuth } from '../context/AuthContext'
 
-const MAX_SEC = 60
+const FREE_MAX_SEC     = 60
+const PREMIUM_MAX_SEC  = 90
+const FREE_FILTER_COUNT = 5
 const EMOJIS_VLOG = ['🌅','🎬','🏋️','🌄','🎉','🎵','🏖️','🌙','🍕','🎮','🚀','🌸']
 const randEmoji = () => EMOJIS_VLOG[Math.floor(Math.random() * EMOJIS_VLOG.length)]
 
@@ -381,6 +384,10 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function RecordView({ onBack, onDone }) {
+  const { user } = useAuth()
+  const isPremium = !!user?.premium
+  const MAX_SEC   = isPremium ? PREMIUM_MAX_SEC : FREE_MAX_SEC
+
   const videoRef    = useRef(null)
   const canvasRef   = useRef(null)
   const rafRef      = useRef(null)
@@ -758,34 +765,43 @@ export default function RecordView({ onBack, onDone }) {
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
                 className="mb-5 px-4">
                 <div className="flex gap-3 overflow-x-auto no-scrollbar py-2">
-                  {FILTERS.map((f, i) => (
-                    <motion.button key={f.name} whileTap={{ scale: 0.88 }}
-                      onClick={() => setFilterIdx(i)}
-                      className="flex-shrink-0 flex flex-col items-center gap-2">
-                      <div className="relative overflow-hidden rounded-2xl transition-all duration-200"
-                        style={{
-                          width: 62, height: 88,
-                          border: filterIdx === i ? '2.5px solid white' : '2.5px solid transparent',
-                          boxShadow: filterIdx === i ? '0 0 12px rgba(255,255,255,0.4)' : 'none',
-                        }}>
-                        {filterThumbs ? (
-                          <img src={filterThumbs} alt={f.name}
-                            className="w-full h-full object-cover"
-                            style={{ filter: f.css !== 'none' ? f.css : undefined }} />
-                        ) : (
-                          <div className="w-full h-full bg-white/10" />
-                        )}
-                        {filterIdx === i && (
-                          <div className="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-white flex items-center justify-center">
-                            <Check size={10} className="text-black" strokeWidth={3} />
-                          </div>
-                        )}
-                      </div>
-                      <span className={`text-[10px] font-semibold transition-colors ${filterIdx === i ? 'text-white' : 'text-white/60'}`}>
-                        {f.name}
-                      </span>
-                    </motion.button>
-                  ))}
+                  {FILTERS.map((f, i) => {
+                    const locked = !isPremium && i >= FREE_FILTER_COUNT
+                    return (
+                      <motion.button key={f.name} whileTap={locked ? {} : { scale: 0.88 }}
+                        onClick={() => locked ? null : setFilterIdx(i)}
+                        className="flex-shrink-0 flex flex-col items-center gap-2"
+                        style={{ opacity: locked ? 0.5 : 1 }}>
+                        <div className="relative overflow-hidden rounded-2xl transition-all duration-200"
+                          style={{
+                            width: 62, height: 88,
+                            border: filterIdx === i ? '2.5px solid white' : '2.5px solid transparent',
+                            boxShadow: filterIdx === i ? '0 0 12px rgba(255,255,255,0.4)' : 'none',
+                          }}>
+                          {filterThumbs ? (
+                            <img src={filterThumbs} alt={f.name}
+                              className="w-full h-full object-cover"
+                              style={{ filter: f.css !== 'none' ? f.css : undefined }} />
+                          ) : (
+                            <div className="w-full h-full bg-white/10" />
+                          )}
+                          {filterIdx === i && !locked && (
+                            <div className="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-white flex items-center justify-center">
+                              <Check size={10} className="text-black" strokeWidth={3} />
+                            </div>
+                          )}
+                          {locked && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                              <Lock size={14} className="text-white/80" />
+                            </div>
+                          )}
+                        </div>
+                        <span className={`text-[10px] font-semibold transition-colors ${filterIdx === i ? 'text-white' : 'text-white/60'}`}>
+                          {f.name}
+                        </span>
+                      </motion.button>
+                    )
+                  })}
                 </div>
               </motion.div>
             )}

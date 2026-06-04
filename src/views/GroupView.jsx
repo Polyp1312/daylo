@@ -177,13 +177,18 @@ function GroupList({ onSelect, onCreate, onOpenChat, onJoinByCode }) {
 // ── Create group ─────────────────────────────────────────────────────────────
 function CreateGroup({ onBack, onCreated }) {
   const { createGroup } = useApp()
+  const toast = useToast()
   const [name,  setName]  = useState('')
   const [emoji, setEmoji] = useState('🎬')
 
   const submit = async () => {
     if (!name.trim()) return
-    const id = await createGroup(name.trim(), emoji)
-    if (id) onCreated(id)
+    try {
+      const id = await createGroup(name.trim(), emoji)
+      if (id) onCreated(id)
+    } catch (e) {
+      toast?.show(e.message, 'error')
+    }
   }
 
   return (

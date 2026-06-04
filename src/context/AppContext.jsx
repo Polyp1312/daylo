@@ -219,9 +219,10 @@ export function AppProvider({ children }) {
     api.groups.list().then(d => { if (d.groups) setGroups(d.groups) }), [])
 
   const createGroup = useCallback(async (name, emoji) => {
-    const { group } = await api.groups.create(name, emoji)
-    if (group) setGroups(p => [...p, group])
-    return group?.id
+    const d = await api.groups.create(name, emoji)
+    if (d.error) throw new Error(d.error)
+    if (d.group) setGroups(p => [...p, d.group])
+    return d.group?.id
   }, [])
 
   const deleteGroup = useCallback(async id => {
