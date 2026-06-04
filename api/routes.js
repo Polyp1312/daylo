@@ -644,6 +644,7 @@ export function registerRoutes(api) {
       const accepter = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
       addNotification(requesterId, 'friend_accepted', me.id,
         `${accepter?.username ?? 'Jemand'} hat deine Freundschaftsanfrage angenommen!`)
+      pushToUser(requesterId, '🎉 Freundschaft angenommen', `${accepter?.username ?? 'Jemand'} ist jetzt dein Freund!`)
     })()
     res.json({ success: true })
   })
@@ -824,6 +825,7 @@ export function registerRoutes(api) {
           vlog.user_id, 'vlog_react', me.id,
           `${sender?.username ?? 'Jemand'} hat auf deinen Vlog reagiert: ${type}`
         )
+        pushToUser(vlog.user_id, `${type} Reaktion`, `${sender?.username ?? 'Jemand'} hat deinen Vlog mit ${type} reagiert.`)
       }
     }
     const rxRows = db.prepare(`
@@ -1314,6 +1316,8 @@ export function registerRoutes(api) {
     const msg = db.prepare(`
       SELECT m.*, u.username as from_name FROM messages m JOIN users u ON u.id=m.from_id WHERE m.id=?
     `).get(id)
+    const sender = db.prepare('SELECT username FROM users WHERE id=?').get(me.id)
+    pushToUser(req.params.friendId, `💬 ${sender?.username ?? 'Nachricht'}`, text.slice(0, 80))
     res.status(201).json({ message: msg })
   })
 

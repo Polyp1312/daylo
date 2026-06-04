@@ -1,6 +1,6 @@
 /* daylo. service worker — push notifications + offline cache */
 
-const CACHE_NAME = 'daylo-shell-v1'
+const CACHE_NAME = 'daylo-shell-v2'
 const SHELL_URLS = ['/', '/index.html']
 
 // ── Install: pre-cache the app shell ─────────────────────────────────────────
@@ -25,13 +25,9 @@ self.addEventListener('fetch', event => {
   const { request } = event
   const url = new URL(request.url)
 
-  // Only handle same-origin GET requests
   if (request.method !== 'GET' || url.origin !== self.location.origin) return
-
-  // API and upload requests: network only (never cache)
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/')) return
 
-  // App shell: stale-while-revalidate
   event.respondWith(
     caches.match(request).then(cached => {
       const networkFetch = fetch(request).then(response => {
@@ -47,17 +43,20 @@ self.addEventListener('fetch', event => {
 
 // ── Push notifications ────────────────────────────────────────────────────────
 self.addEventListener('push', event => {
-  let data = { title: 'daylo.', body: 'Neuer Vlog verfügbar!' }
+  let data = { title: 'daylo.', body: 'Du hast eine neue Benachrichtigung.' }
   try { data = event.data?.json() ?? data } catch {}
+
+  // Unique tag per notification so they all appear separately
+  const tag = `daylo-${data.title}-${Date.now()}`
 
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body:    data.body,
-      icon:    '/favicon.svg',
-      badge:   '/favicon.svg',
+      icon:    '/icon-512.svg',
+      badge:   '/icon-512.svg',
       vibrate: [100, 50, 100],
-      tag:     'daylo-notification',
-      renotify: false,
+      tag,
+      renotify: true,
       data:    { url: data.url ?? '/' },
     })
   )
@@ -69,7 +68,6 @@ self.addEventListener('notificationclick', event => {
   const targetUrl = event.notification.data?.url ?? '/'
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-      // Focus existing window if already open
       const existing = list.find(c => new URL(c.url).origin === self.location.origin)
       if (existing) return existing.focus().then(w => w.navigate(targetUrl))
       return clients.openWindow(targetUrl)
