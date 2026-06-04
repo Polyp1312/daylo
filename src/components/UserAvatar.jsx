@@ -30,11 +30,13 @@ function colorPair(id = '') {
   return PALETTE[h % PALETTE.length]
 }
 
-export default function UserAvatar({ user, size = 40, className = '', fontSize, border }) {
+export default function UserAvatar({ user, size = 40, className = '', fontSize, border, rounded = 'full' }) {
   const [imgError, setImgError] = useState(false)
   const url  = avatarUrl(user?.avatar)
   const fs   = fontSize ?? Math.max(10, Math.round(size * 0.35))
   const [c1, c2] = colorPair(user?.id ?? '')
+
+  const roundedClass = rounded === 'full' ? 'rounded-full' : `rounded-[${rounded}]`
 
   const style = {
     width: size, height: size, flexShrink: 0,
@@ -48,12 +50,11 @@ export default function UserAvatar({ user, size = 40, className = '', fontSize, 
         alt={user?.name ?? ''}
         onError={() => setImgError(true)}
         style={style}
-        className={`rounded-full object-cover ${className}`}
+        className={`${roundedClass} object-cover ${className}`}
       />
     )
   }
 
-  // Fallback: gradient initials
   return (
     <div
       style={{
@@ -61,7 +62,7 @@ export default function UserAvatar({ user, size = 40, className = '', fontSize, 
         background: `linear-gradient(135deg, ${c1}, ${c2})`,
         fontSize: fs,
       }}
-      className={`rounded-full flex items-center justify-center text-white font-black select-none ${className}`}
+      className={`${roundedClass} flex items-center justify-center text-white font-black select-none ${className}`}
     >
       {(user?.initials ?? user?.name?.slice(0, 2)?.toUpperCase() ?? '?')}
     </div>

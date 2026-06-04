@@ -951,7 +951,7 @@ function ProfileMain({ onAddFriend, onSettings, onReveal, onOpenMessage, onViewF
             <div className="relative">
               <div className="w-[88px] h-[88px] rounded-[24px] overflow-hidden"
                 style={{ border: '3px solid #0A0A0B', boxShadow: `0 0 28px ${me?.color ?? '#7B61FF'}55, 0 8px 24px rgba(0,0,0,0.6)` }}>
-                <UserAvatar user={{ ...me, avatar: avatarUrl(user?.avatar) }} size={82} fontSize={28} />
+                <UserAvatar user={{ ...me, avatar: avatarUrl(user?.avatar) }} size={82} fontSize={28} rounded="22px" />
               </div>
               {myStreak > 0 && (
                 <div className="absolute -bottom-1.5 -right-1.5 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-black text-white border-2 border-[#0A0A0B]"

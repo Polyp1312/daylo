@@ -421,7 +421,10 @@ export default function RecordView({ onBack, onDone }) {
 
   const videoCallbackRef = useCallback(el => {
     videoRef.current = el
-    if (el && streamRef.current) el.srcObject = streamRef.current
+    if (el && streamRef.current) {
+      el.srcObject = streamRef.current
+      el.play().catch(() => {})
+    }
   }, [])
 
   const switchCamera = async () => {
@@ -622,19 +625,18 @@ export default function RecordView({ onBack, onDone }) {
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="fixed inset-0 bg-black flex flex-col" style={{ userSelect: 'none' }}>
 
-        {/* Camera */}
+        {/* Camera — always mounted so stream attaches immediately */}
         <div className="absolute inset-0" onClick={onCameraClick}
           style={{ cursor: pendingEmoji ? 'crosshair' : 'default' }}>
-          {permission === 'granted' && (
-            <video ref={videoCallbackRef} autoPlay playsInline muted
-              className="w-full h-full object-cover"
-              style={{
-                filter:          filterCSS !== 'none' ? filterCSS : undefined,
-                transform:       `${facingMode === 'user' ? 'scaleX(-1) ' : ''}scale(${zoom})`,
-                transformOrigin: 'center',
-                transition:      'filter 0.3s',
-              }} />
-          )}
+          <video ref={videoCallbackRef} autoPlay playsInline muted
+            className="w-full h-full object-cover"
+            style={{
+              filter:          filterCSS !== 'none' ? filterCSS : undefined,
+              transform:       `${facingMode === 'user' ? 'scaleX(-1) ' : ''}scale(${zoom})`,
+              transformOrigin: 'center',
+              transition:      'filter 0.3s',
+              opacity:         permission === 'granted' ? 1 : 0,
+            }} />
 
           {/* Stickers */}
           {stickers.map(s => (
