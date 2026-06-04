@@ -127,41 +127,6 @@ function normalizeClip(inputPath, outputPath) {
   ])
 }
 
-// Concatenate pre-normalized clips via concat demuxer (stream copy → fast)
-function concatNormalized(normPaths, outputPath) {
-  const listPath = outputPath + '.list'
-  fs.writeFileSync(listPath, normPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'))
-  return ffrun([
-    '-f', 'concat', '-safe', '0', '-i', listPath,
-    '-c', 'copy', '-y', outputPath,
-  ]).finally(() => { try { fs.unlinkSync(listPath) } catch {} })
-}
-
-// Apply cinematic colour grade + loudness normalisation
-function applyGrade(inputPath, outputPath) {
-  return ffrun([
-    '-i', inputPath,
-    '-vf', [
-      // Vivid + slight warmth: boost sat/contrast, push reds up, pull blues slightly
-      'eq=saturation=1.38:contrast=1.1:brightness=0.02:gamma=0.97:gamma_r=0.95:gamma_b=1.05',
-      // Edge sharpen (luma only)
-      'unsharp=5:5:0.8:3:3:0',
-      // Cinematic vignette
-      'vignette=PI/4.5:eval=init',
-    ].join(','),
-    '-af', [
-      // EBU R128 loudness normalisation (-14 LUFS = Spotify / YouTube standard)
-      'loudnorm=I=-14:TP=-2:LRA=11',
-      // Light dynamic compression so quiet/loud clips blend well
-      'acompressor=threshold=-20dB:ratio=3:attack=5:release=60:knee=3',
-    ].join(','),
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '21',
-    '-c:a', 'aac', '-b:a', '192k',
-    '-movflags', '+faststart',
-    '-y', outputPath,
-  ])
-}
-
 // Extract thumbnail from best-looking moment (~25 % in)
 function extractThumbnail(videoPath, thumbPath, seekSecs) {
   const seek = Math.max(0.5, seekSecs).toFixed(2)
@@ -169,6 +134,80 @@ function extractThumbnail(videoPath, thumbPath, seekSecs) {
     '-ss', seek, '-i', videoPath,
     '-vframes', '1', '-q:v', '1',
     '-y', thumbPath,
+  ])
+}
+
+// Cinematic grade filter string (applied to a single labelled stream)
+const GRADE_V = [
+  'eq=saturation=1.38:contrast=1.1:brightness=0.02:gamma=0.97:gamma_r=0.95:gamma_b=1.05',
+  'unsharp=5:5:0.8:3:3:0',
+  'vignette=PI/4.5:eval=init',
+].join(',')
+
+// Audio mastering filter string
+const GRADE_A = [
+  'loudnorm=I=-14:TP=-2:LRA=11',
+  'acompressor=threshold=-20dB:ratio=3:attack=5:release=60:knee=3',
+].join(',')
+
+// Available xfade transitions — pick randomly per cut for variety
+const TRANSITIONS = ['fade', 'fadeblack', 'smoothleft', 'smoothright', 'slideup', 'slideleft']
+
+// Build filter_complex for N clips with crossfade transitions + cinematic grade
+function buildFilterComplex(n, durations, fadeDur) {
+  const lines = []
+
+  if (n === 1) {
+    lines.push(`[0:v]${GRADE_V}[vout]`)
+    lines.push(`[0:a]${GRADE_A}[aout]`)
+    return { fc: lines.join(';'), vout: '[vout]', aout: '[aout]' }
+  }
+
+  // Chain xfade for video — each transition uses a different style
+  let prevV = '[0:v]'
+  let cumOffset = 0
+  for (let i = 1; i < n; i++) {
+    cumOffset += durations[i - 1] - fadeDur
+    const trans = TRANSITIONS[i % TRANSITIONS.length]
+    const outTag = `[xv${i}]`
+    lines.push(`${prevV}[${i}:v]xfade=transition=${trans}:duration=${fadeDur.toFixed(3)}:offset=${Math.max(0, cumOffset).toFixed(3)}${outTag}`)
+    prevV = outTag
+  }
+  // Apply grade to the final video stream
+  lines.push(`${prevV}${GRADE_V}[vout]`)
+
+  // Chain acrossfade for audio (smooth audio crossfade matches video fade)
+  let prevA = '[0:a]'
+  for (let i = 1; i < n; i++) {
+    const outTag = `[xa${i}]`
+    lines.push(`${prevA}[${i}:a]acrossfade=d=${fadeDur.toFixed(3)}:c1=tri:c2=tri${outTag}`)
+    prevA = outTag
+  }
+  // Apply audio mastering to the final audio stream
+  lines.push(`${prevA}${GRADE_A}[aout]`)
+
+  return { fc: lines.join(';'), vout: '[vout]', aout: '[aout]' }
+}
+
+// Final encode: N normalised clips → transitions + grade → output MP4
+function finalEncode(normPaths, durations, outputPath) {
+  const n = normPaths.length
+
+  // Fade duration must not exceed half of the shortest clip
+  const minDur = Math.min(...durations.filter(d => d > 0))
+  const fadeDur = Math.min(0.4, minDur / 2.1)
+
+  const { fc, vout, aout } = buildFilterComplex(n, durations, fadeDur)
+
+  const inputs = normPaths.flatMap(p => ['-i', p])
+  return ffrun([
+    ...inputs,
+    '-filter_complex', fc,
+    '-map', vout, '-map', aout,
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '21',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    '-y', outputPath,
   ])
 }
 
@@ -182,12 +221,15 @@ async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
   try {
     fs.mkdirSync(tmpDir, { recursive: true })
 
-    // 1. Probe actual durations and filter out clips < 0.4 s
-    const durations = await Promise.all(clipPaths.map(p => ffprobeDurationFast(p)))
-    const validClips = clipPaths.filter((_, i) => (durations[i] ?? 0) >= 0.4)
-    if (!validClips.length) validClips.push(clipPaths[0])
+    // 1. Probe durations — skip clips shorter than 0.4 s
+    const rawDurations = await Promise.all(clipPaths.map(p => ffprobeDurationFast(p)))
+    const validIdx     = rawDurations.map((d, i) => d >= 0.4 ? i : -1).filter(i => i >= 0)
+    if (!validIdx.length) validIdx.push(0)
+    const validClips = validIdx.map(i => clipPaths[i])
 
-    // 2. Normalise each clip to consistent 720×1280 H.264
+    console.log(`🎬 KI-Schnitt: ${validClips.length} von ${clipPaths.length} Clips (${validClips.length} verwendet)`)
+
+    // 2. Normalise every clip → consistent 720×1280 H.264, 44.1 kHz stereo
     const normPaths = []
     for (let i = 0; i < validClips.length; i++) {
       const np = path.join(tmpDir, `n${i}.mp4`)
@@ -195,29 +237,25 @@ async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration) {
       normPaths.push(np)
     }
 
-    // 3. Concatenate (stream-copy — no quality loss, very fast)
-    const concatPath = path.join(tmpDir, 'concat.mp4')
-    if (normPaths.length === 1) {
-      fs.copyFileSync(normPaths[0], concatPath)
-    } else {
-      await concatNormalized(normPaths, concatPath)
-    }
+    // 3. Probe normalised durations (needed for accurate xfade offsets)
+    const normDurations = await Promise.all(normPaths.map(p => ffprobeDurationFast(p)))
 
-    // 4. Cinematic grade + audio mastering → final file
-    await applyGrade(concatPath, outPath)
+    // 4. Final encode — xfade transitions + cinematic grade + audio mastering
+    await finalEncode(normPaths, normDurations, outPath)
 
-    // 5. Extract sharp thumbnail at ~25 % of video
+    // 5. Extract sharp thumbnail at ~25 % of finished video
     const realDuration = await ffprobeDurationFast(outPath)
-    const thumbName = `${vlogId}_thumb.jpg`
-    const thumbPath = path.join(userDir, thumbName)
+    const thumbName    = `${vlogId}_thumb.jpg`
+    const thumbPath    = path.join(userDir, thumbName)
     await extractThumbnail(outPath, thumbPath, (realDuration || totalDuration || 10) * 0.25)
 
-    // 6. Update DB — mark ready + set new thumbnail
+    // 6. Mark vlog ready and update thumbnail in DB
     db.prepare('UPDATE vlogs SET status=?, processed_filename=?, thumbnail=? WHERE id=?')
       .run('ready', kiName, thumbName, vlogId)
+
     console.log(`✅ KI-Schnitt fertig (${validClips.length} clips, ${Math.round(realDuration)}s): ${kiName}`)
 
-    // 7. Cleanup temp dir + raw clip files
+    // 7. Clean up temp dir and raw input files
     fs.rmSync(tmpDir, { recursive: true, force: true })
     for (const p of clipPaths) { try { if (p !== outPath) fs.unlinkSync(p) } catch {} }
 
