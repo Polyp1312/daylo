@@ -328,6 +328,9 @@ function SettingsScreen({ onBack }) {
   const [subView, setSubView] = useState('main')
   const [yearReview, setYearReview] = useState(null)
   const [reviewLoading, setReviewLoading] = useState(false)
+  const [codeInput,   setCodeInput]   = useState('')
+  const [codeOpen,    setCodeOpen]    = useState(false)
+  const [codeLoading, setCodeLoading] = useState(false)
 
   // Profile fields
   const [username,   setUsername]   = useState(user?.username ?? '')
@@ -653,7 +656,64 @@ function SettingsScreen({ onBack }) {
               sublabel="Regelmäßig ändern für mehr Sicherheit"
               onTap={() => setSubView('change-password')} />
             <SettingsRow icon={CalendarDays} iconBg="rgba(46,204,113,0.15)" iconColor="#2ECC71"
-              label="Mitglied seit" value={memberSince} last />
+              label="Mitglied seit" value={memberSince} />
+            {/* Code einlösen */}
+            <div>
+              <SettingsRow icon={Sparkles} iconBg="rgba(255,215,0,0.15)" iconColor="#FFD60A"
+                label="Code einlösen"
+                sublabel={user?.premium ? 'Premium aktiv ✓' : 'Schalte Premium oder Extras frei'}
+                onTap={() => setCodeOpen(p => !p)}
+                last={!codeOpen} />
+              <AnimatePresence>
+                {codeOpen && (
+                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                    <div className="px-4 pb-4 flex gap-2">
+                      <input
+                        value={codeInput}
+                        onChange={e => setCodeInput(e.target.value)}
+                        onKeyDown={async e => {
+                          if (e.key !== 'Enter' || codeLoading || !codeInput.trim()) return
+                          setCodeLoading(true)
+                          const d = await api.redeemCode(codeInput.trim()).catch(err => ({ error: err.message }))
+                          setCodeLoading(false)
+                          if (d.error) { toast?.show(d.error, 'error'); return }
+                          toast?.show(d.message ?? 'Code eingelöst!', 'success')
+                          setCodeInput('')
+                          setCodeOpen(false)
+                          // Refresh user so premium shows immediately
+                          const fresh = await api.me().catch(() => null)
+                          if (fresh?.user) updateUser(fresh.user, null)
+                        }}
+                        placeholder="Code eingeben…"
+                        className="flex-1 rounded-xl px-4 py-2.5 text-sm text-white outline-none"
+                        style={{ background: 'rgba(28,28,30,0.9)', border: '1.5px solid rgba(255,215,0,0.25)', caretColor: '#FFD60A' }}
+                      />
+                      <motion.button whileTap={{ scale: 0.95 }}
+                        disabled={codeLoading || !codeInput.trim()}
+                        onClick={async () => {
+                          if (codeLoading || !codeInput.trim()) return
+                          setCodeLoading(true)
+                          const d = await api.redeemCode(codeInput.trim()).catch(err => ({ error: err.message }))
+                          setCodeLoading(false)
+                          if (d.error) { toast?.show(d.error, 'error'); return }
+                          toast?.show(d.message ?? 'Code eingelöst!', 'success')
+                          setCodeInput('')
+                          setCodeOpen(false)
+                          const fresh = await api.me().catch(() => null)
+                          if (fresh?.user) updateUser(fresh.user, null)
+                        }}
+                        className="px-4 py-2.5 rounded-xl font-black text-sm disabled:opacity-50"
+                        style={{ background: 'rgba(255,215,0,0.18)', color: '#FFD60A', border: '1.5px solid rgba(255,215,0,0.3)' }}>
+                        {codeLoading
+                          ? <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: '#FFD60A', borderTopColor: 'transparent' }} />
+                          : '→'}
+                      </motion.button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </SettingsSection>
 
           {/* ─ Benachrichtigungen ─ */}
@@ -819,13 +879,30 @@ function YearReviewScreen({ data, onBack }) {
 // ── Add friend screen ─────────────────────────────────────────────────────────
 function AddFriendScreen({ onBack }) {
   const { sendRequest, acceptRequest } = useApp()
-  const toast = useToast()
-  const [query,   setQuery]   = useState('')
-  const [results, setResults] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [acted,   setActed]   = useState({})
-  const abortRef = useRef(null)
+  const toast    = useToast()
+  const [query,     setQuery]     = useState('')
+  const [results,   setResults]   = useState([])
+  const [discover,  setDiscover]  = useState([])
+  const [loading,   setLoading]   = useState(false)
+  const [discLoading, setDiscLoading] = useState(true)
+  const [hasMore,   setHasMore]   = useState(true)
+  const [offset,    setOffset]    = useState(0)
+  const [acted,     setActed]     = useState({})
+  const abortRef  = useRef(null)
+  const LIMIT = 30
 
+  // Load initial discover list
+  useEffect(() => {
+    api.search('', null, 0).then(d => {
+      const users = (d.users ?? []).map(u => ({ ...formatUser(u), status: u.status, premium: u.premium }))
+      setDiscover(users)
+      setHasMore(users.length === LIMIT)
+      setOffset(LIMIT)
+      setDiscLoading(false)
+    }).catch(() => setDiscLoading(false))
+  }, [])
+
+  // Search with debounce
   useEffect(() => {
     if (query.length < 1) { setResults([]); return }
     const timer = setTimeout(async () => {
@@ -836,7 +913,7 @@ function AddFriendScreen({ onBack }) {
       try {
         const data = await api.search(query, ctrl.signal)
         if (!ctrl.signal.aborted)
-          setResults((data.users ?? []).map(u => ({ ...formatUser(u), status: u.status })))
+          setResults((data.users ?? []).map(u => ({ ...formatUser(u), status: u.status, premium: u.premium })))
       } catch (err) {
         if (err.name !== 'AbortError') setResults([])
       } finally {
@@ -846,14 +923,34 @@ function AddFriendScreen({ onBack }) {
     return () => clearTimeout(timer)
   }, [query])
 
+  const loadMore = async () => {
+    if (!hasMore || discLoading) return
+    setDiscLoading(true)
+    const d = await api.search('', null, offset).catch(() => ({ users: [] }))
+    const more = (d.users ?? []).map(u => ({ ...formatUser(u), status: u.status, premium: u.premium }))
+    setDiscover(p => {
+      const ids = new Set(p.map(x => x.id))
+      return [...p, ...more.filter(x => !ids.has(x.id))]
+    })
+    setHasMore(more.length === LIMIT)
+    setOffset(o => o + LIMIT)
+    setDiscLoading(false)
+  }
+
+  const applyAction = (id, action) => {
+    setActed(p => ({ ...p, [id]: action }))
+    setDiscover(p => p.map(u => u.id === id ? { ...u, status: action === 'accepted' ? 'friend' : action } : u))
+    setResults(p  => p.map(u => u.id === id ? { ...u, status: action === 'accepted' ? 'friend' : action } : u))
+  }
+
   const handleAction = async u => {
     if (u.status === 'incoming') {
       acceptRequest(u)
-      setActed(p => ({ ...p, [u.id]: 'accepted' }))
+      applyAction(u.id, 'accepted')
       toast?.show(`Du bist jetzt mit ${u.name} befreundet! 🎉`, 'success')
     } else {
       await sendRequest(u)
-      setActed(p => ({ ...p, [u.id]: 'sent' }))
+      applyAction(u.id, 'sent')
       toast?.show(`Anfrage an ${u.name} gesendet.`, 'info')
     }
   }
@@ -867,6 +964,36 @@ function AddFriendScreen({ onBack }) {
     return                       { label: 'Anfrage senden', cls: 'text-white',     bg: '#7B61FF',               border: '#7B61FF',              disabled: false, icon: <UserPlus size={11}/> }
   }
 
+  const UserRow = ({ u, i }) => {
+    const btn = btnStyle(u)
+    return (
+      <motion.div key={u.id}
+        initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0 }} transition={{ delay: Math.min(i * 0.03, 0.3) }}
+        className="flex items-center gap-3.5 rounded-2xl p-3.5"
+        style={{ background: 'rgba(20,20,21,0.9)', border: '1px solid rgba(255,255,255,0.05)' }}>
+        <div className="relative flex-shrink-0">
+          <UserAvatar user={u} size={46} />
+          {u.premium && (
+            <span className="absolute -bottom-1 -right-1 text-xs leading-none">💎</span>
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-white truncate">{u.name}</p>
+          <p className="text-xs text-[#8E8E93] mt-0.5">@{u.name?.toLowerCase()}</p>
+        </div>
+        <motion.button whileTap={{ scale: 0.88 }} onClick={() => handleAction(u)}
+          disabled={btn.disabled}
+          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold flex-shrink-0 ${btn.cls}`}
+          style={{ background: btn.bg, border: `1.5px solid ${btn.border}` }}>
+          {btn.icon} {btn.label}
+        </motion.button>
+      </motion.div>
+    )
+  }
+
+  const displayList = query.length > 0 ? results : discover
+
   return (
     <motion.div key="add-friend" {...slide} className="min-h-screen pb-28" style={{ background: '#0A0A0B' }}>
       <div className="flex items-center gap-3 px-5 pt-14 pb-5">
@@ -874,8 +1001,9 @@ function AddFriendScreen({ onBack }) {
           className="w-10 h-10 rounded-full bg-[#1C1C1E] flex items-center justify-center flex-shrink-0">
           <ChevronLeft size={18} className="text-white" />
         </motion.button>
-        <span className="text-xl font-black text-white">Freund hinzufügen</span>
+        <span className="text-xl font-black text-white">Nutzer entdecken</span>
       </div>
+
       <div className="px-5 mb-5">
         <div className="flex items-center gap-3 rounded-2xl px-4 py-3.5 focus-within:border-[#7B61FF] transition-all"
           style={{ background: 'rgba(28,28,30,0.9)', border: '1.5px solid rgba(255,255,255,0.07)' }}>
@@ -891,22 +1019,16 @@ function AddFriendScreen({ onBack }) {
           )}
         </div>
       </div>
+
       <div className="px-5">
-        {query.length === 0 && (
-          <div className="text-center py-16">
-            <div className="w-16 h-16 rounded-2xl bg-[#1C1C1E] flex items-center justify-center mx-auto mb-4">
-              <Search size={24} className="text-[#3A3A3C]" />
-            </div>
-            <p className="text-white font-semibold text-sm">Freunde finden</p>
-            <p className="text-[#8E8E93] text-xs mt-1">Gib einen Namen ein, um zu suchen</p>
-          </div>
-        )}
+        {/* Search loading */}
         {query.length > 0 && loading && (
           <div className="flex justify-center py-12">
             <div className="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin"
               style={{ borderColor: '#7B61FF', borderTopColor: 'transparent' }} />
           </div>
         )}
+        {/* No search results */}
         {query.length > 0 && !loading && results.length === 0 && (
           <div className="text-center py-12">
             <p className="text-2xl mb-2">🔍</p>
@@ -914,32 +1036,40 @@ function AddFriendScreen({ onBack }) {
             <p className="text-[#8E8E93] text-xs mt-1">für „{query}"</p>
           </div>
         )}
+        {/* Discover header */}
+        {query.length === 0 && (
+          <p className="text-[11px] text-[#8E8E93] font-bold uppercase tracking-widest mb-3">
+            Alle Nutzer · {discover.length}{hasMore ? '+' : ''}
+          </p>
+        )}
+        {/* Initial discover load */}
+        {query.length === 0 && discLoading && discover.length === 0 && (
+          <div className="flex justify-center py-12">
+            <div className="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin"
+              style={{ borderColor: '#7B61FF', borderTopColor: 'transparent' }} />
+          </div>
+        )}
+
         <div className="space-y-2.5">
           <AnimatePresence>
-            {results.map((u, i) => {
-              const btn = btnStyle(u)
-              return (
-                <motion.div key={u.id}
-                  initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }} transition={{ delay: i * 0.04 }}
-                  className="flex items-center gap-3.5 rounded-2xl p-3.5"
-                  style={{ background: 'rgba(20,20,21,0.9)', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <UserAvatar user={u} size={46} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-white">{u.name}</p>
-                    <p className="text-xs text-[#8E8E93] mt-0.5">@{u.name.toLowerCase()}</p>
-                  </div>
-                  <motion.button whileTap={{ scale: 0.88 }} onClick={() => handleAction(u)}
-                    disabled={btn.disabled}
-                    className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold flex-shrink-0 ${btn.cls}`}
-                    style={{ background: btn.bg, border: `1.5px solid ${btn.border}` }}>
-                    {btn.icon} {btn.label}
-                  </motion.button>
-                </motion.div>
-              )
-            })}
+            {displayList.map((u, i) => <UserRow key={u.id} u={u} i={i} />)}
           </AnimatePresence>
         </div>
+
+        {/* Load more */}
+        {query.length === 0 && hasMore && !discLoading && (
+          <motion.button whileTap={{ scale: 0.97 }} onClick={loadMore}
+            className="w-full mt-4 py-3.5 rounded-2xl text-sm font-bold text-[#8E8E93]"
+            style={{ background: 'rgba(28,28,30,0.8)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            Mehr laden…
+          </motion.button>
+        )}
+        {query.length === 0 && discLoading && discover.length > 0 && (
+          <div className="flex justify-center py-4">
+            <div className="w-5 h-5 rounded-full border-2 border-t-transparent animate-spin"
+              style={{ borderColor: '#7B61FF', borderTopColor: 'transparent' }} />
+          </div>
+        )}
       </div>
     </motion.div>
   )

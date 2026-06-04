@@ -97,7 +97,8 @@ export const api = {
   me:             ()                          => req('GET',    '/api/auth/me'),
   updateUsername: (username)                  => req('PUT',    '/api/auth/username',        { username }),
   uploadAvatar:   (formData)                  => xhrSend('/api/auth/avatar', formData),
-  search:         (q, signal)                 => req('GET',    `/api/users/search?q=${encodeURIComponent(q)}`, undefined, signal),
+  redeemCode:     (code)                      => req('POST',   '/api/auth/redeem-code',     { code }),
+  search:         (q, signal, offset = 0)     => req('GET',    `/api/users/search?q=${encodeURIComponent(q)}&offset=${offset}`, undefined, signal),
   auth: {
     settings:       (body)                    => req('PUT',    '/api/auth/settings',        body),
     changePassword: (currentPassword, newPassword) => req('POST', '/api/auth/change-password', { currentPassword, newPassword }),

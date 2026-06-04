@@ -12,3 +12,9 @@ services:
         generateValue: true
       - key: PORT
         value: 3000
+      - key: RESEND_API_KEY
+        sync: false
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_PASS
+        sync: false

@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 import multer from 'multer'
 import express from 'express'
 import path from 'path'
@@ -22,11 +23,31 @@ fs.mkdirSync(AVATARS_DIR, { recursive: true })
 // ── JWT secret ────────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || 'daylo-secret-2025'
 
-// ── Gmail / nodemailer email client ──────────────────────────────────────────
-const mailer = nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
-})
+// ── Email — Resend primary, Gmail fallback ────────────────────────────────────
+const resendClient = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null
+const gmailClient  = (process.env.GMAIL_USER && process.env.GMAIL_PASS)
+  ? nodemailer.createTransport({ service: 'gmail', auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS } })
+  : null
+
+async function sendEmail(to, subject, html) {
+  // 1. Try Resend (most reliable on cloud servers)
+  if (resendClient) {
+    const { error } = await resendClient.emails.send({
+      from: 'daylo. <onboarding@resend.dev>',
+      to,
+      subject,
+      html,
+    })
+    if (!error) return
+    console.warn('Resend-Fehler:', error.message)
+  }
+  // 2. Fall back to Gmail
+  if (gmailClient) {
+    await gmailClient.sendMail({ from: `daylo. <${process.env.GMAIL_USER}>`, to, subject, html })
+    return
+  }
+  throw new Error('Kein E-Mail-Provider konfiguriert.')
+}
 
 // ── VAPID keys (auto-generate once, persist in DB) ────────────────────────────
 let vapidPublicKey  = db.prepare('SELECT value FROM config WHERE key=?').get('vapid_public')?.value
@@ -627,16 +648,15 @@ async function notifyFriends(uploaderId, username) {
       `${username} hat heute seinen Vlog hochgeladen! 🎬`)
 
     // Email (non-blocking, best-effort)
-    mailer.sendMail({
-      from: `daylo. <${process.env.GMAIL_USER}>`,
-      to: friend.email,
-      subject: `${username} hat heute seinen Vlog hochgeladen 🎬`,
-      html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
+    sendEmail(
+      friend.email,
+      `${username} hat heute seinen Vlog hochgeladen 🎬`,
+      `<div style="font-family:sans-serif;max-width:400px;margin:auto">
         <h2 style="color:#7B61FF">daylo.</h2>
         <p><strong>${username}</strong> hat heute einen neuen Vlog hochgeladen!</p>
         <p style="color:#999;font-size:12px">Öffne daylo, um ihn anzusehen.</p>
-      </div>`,
-    }).catch(err => console.warn(`E-Mail an ${friend.email} fehlgeschlagen:`, err.message))
+      </div>`
+    ).catch(err => console.warn(`E-Mail an ${friend.email} fehlgeschlagen:`, err.message))
 
     // Push notifications
     const subs = db.prepare('SELECT * FROM push_subscriptions WHERE user_id=?').all(friend.id)
@@ -721,27 +741,23 @@ export function registerRoutes(api) {
     if (db.prepare('SELECT id FROM users WHERE username=?').get(username))
       return res.status(409).json({ error: 'Nutzername bereits vergeben.' })
 
-    const hash = await bcrypt.hash(password, 12)
+    const hash = await bcrypt.hash(password, 10)
     const code = String(Math.floor(100000 + Math.random() * 900000))
     db.prepare(`INSERT INTO users (id,email,username,hash,code,verified,created_at) VALUES (?,?,?,?,?,0,?)`)
       .run(crypto.randomUUID(), email, username, hash, code, Date.now())
 
     console.log(`\n🔑  Verifikationscode für ${email}: ${code}\n`)
-    try {
-      await mailer.sendMail({
-        from: `daylo. <${process.env.GMAIL_USER}>`,
-        to: email,
-        subject: 'Dein daylo Bestätigungscode',
-        html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
-          <h2 style="color:#7B61FF">Willkommen bei daylo! 🎬</h2>
-          <p>Dein Bestätigungscode:</p>
-          <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#7B61FF;padding:20px;background:#f5f5f5;border-radius:12px;text-align:center">${code}</div>
-          <p style="color:#999;font-size:12px;margin-top:20px">Gib diesen Code in der App ein.</p>
-        </div>`,
-      })
-    } catch (err) {
-      console.warn('Mail-Fehler:', err.message)
-    }
+    sendEmail(
+      email,
+      'Dein daylo Bestätigungscode',
+      `<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px">
+        <h2 style="color:#7B61FF;margin-bottom:8px">Willkommen bei daylo! 🎬</h2>
+        <p style="color:#555;margin-bottom:24px">Gib diesen Code in der App ein, um dein Konto zu bestätigen:</p>
+        <div style="font-size:42px;font-weight:900;letter-spacing:10px;color:#7B61FF;padding:24px;background:#f0eeff;border-radius:16px;text-align:center">${code}</div>
+        <p style="color:#999;font-size:12px;margin-top:20px">Dieser Code ist 24 Stunden gültig.</p>
+      </div>`
+    ).catch(err => console.warn('Mail-Fehler:', err.message))
+
     res.json({ success: true })
   })
 
@@ -783,19 +799,16 @@ export function registerRoutes(api) {
       const expires = Date.now() + 15 * 60 * 1000  // 15 minutes
       db.prepare('UPDATE users SET reset_token=?, reset_token_expires=? WHERE id=?').run(code, expires, u.id)
       console.log(`🔑 Reset-Code für ${email}: ${code}`)
-      try {
-        await mailer.sendMail({
-          from: `daylo. <${process.env.GMAIL_USER}>`,
-          to: email,
-          subject: 'Dein daylo Passwort zurücksetzen',
-          html: `<div style="font-family:sans-serif;max-width:400px;margin:auto">
-            <h2 style="color:#7B61FF">Passwort zurücksetzen 🔑</h2>
-            <p>Dein Reset-Code (gültig 15 Minuten):</p>
-            <div style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#7B61FF;padding:20px;background:#f5f5f5;border-radius:12px;text-align:center">${code}</div>
-            <p style="color:#999;font-size:12px;margin-top:20px">Falls du das nicht angefordert hast, ignoriere diese E-Mail.</p>
-          </div>`,
-        })
-      } catch (err) { console.warn('Reset-Mail Fehler:', err.message) }
+      sendEmail(
+        email,
+        'Dein daylo Passwort zurücksetzen',
+        `<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px">
+          <h2 style="color:#7B61FF">Passwort zurücksetzen 🔑</h2>
+          <p style="color:#555">Dein Reset-Code (gültig 15 Minuten):</p>
+          <div style="font-size:42px;font-weight:900;letter-spacing:10px;color:#7B61FF;padding:24px;background:#f0eeff;border-radius:16px;text-align:center">${code}</div>
+          <p style="color:#999;font-size:12px;margin-top:20px">Falls du das nicht angefordert hast, ignoriere diese E-Mail.</p>
+        </div>`
+      ).catch(err => console.warn('Reset-Mail Fehler:', err.message))
     }
     res.json({ success: true })
   })
@@ -809,7 +822,7 @@ export function registerRoutes(api) {
     const u = db.prepare('SELECT * FROM users WHERE email=? AND reset_token=?').get(email, code)
     if (!u) return res.status(400).json({ error: 'Ungültiger Code.' })
     if (Date.now() > (u.reset_token_expires ?? 0)) return res.status(400).json({ error: 'Code abgelaufen. Bitte neu anfordern.' })
-    const hash = await bcrypt.hash(password, 12)
+    const hash = await bcrypt.hash(password, 10)
     db.prepare('UPDATE users SET hash=?, reset_token=NULL, reset_token_expires=NULL WHERE id=?').run(hash, u.id)
     res.json({ success: true })
   })
@@ -823,6 +836,35 @@ export function registerRoutes(api) {
       if (!fresh) return res.status(404).json({ error: 'Benutzer nicht gefunden.' })
       res.json({ user: { ...fresh, verified: !!fresh.verified, searchable: fresh.searchable !== 0 } })
     } catch { res.status(401).json({ error: 'Session abgelaufen.' }) }
+  })
+
+  // ── Premium code redemption ───────────────────────────────────────────────────
+  api.post('/api/auth/redeem-code', (req, res) => {
+    const me = requireAuth(req, res)
+    if (!me) return
+    const code = sanitizeText(req.body?.code ?? '', 50).toLowerCase().trim()
+    if (!code) return res.status(400).json({ error: 'Kein Code angegeben.' })
+
+    const pc = db.prepare('SELECT * FROM premium_codes WHERE LOWER(code)=?').get(code)
+    if (!pc) return res.status(404).json({ error: 'Ungültiger Code.' })
+
+    // Already redeemed by this user?
+    const already = db.prepare('SELECT 1 FROM code_redemptions WHERE code=? AND user_id=?').get(pc.code, me.id)
+    if (already) return res.status(409).json({ error: 'Du hast diesen Code bereits eingelöst.' })
+
+    // Max uses exceeded? (-1 = unlimited)
+    if (pc.max_uses !== -1 && pc.used_count >= pc.max_uses)
+      return res.status(410).json({ error: 'Dieser Code ist abgelaufen.' })
+
+    db.transaction(() => {
+      db.prepare('INSERT INTO code_redemptions (code,user_id,redeemed_at) VALUES (?,?,?)').run(pc.code, me.id, Date.now())
+      db.prepare('UPDATE premium_codes SET used_count=used_count+1 WHERE code=?').run(pc.code)
+      if (pc.reward === 'premium_lifetime') {
+        db.prepare('UPDATE users SET premium=1 WHERE id=?').run(me.id)
+      }
+    })()
+
+    res.json({ success: true, reward: pc.reward, message: '🎉 Premium freigeschaltet!' })
   })
 
   api.put('/api/auth/settings', (req, res) => {
@@ -911,25 +953,46 @@ export function registerRoutes(api) {
   // ── Users ───────────────────────────────────────────────────────────────────
 
   api.get('/api/users/search', (req, res) => {
-    const me = requireAuth(req, res)
+    const me     = requireAuth(req, res)
     if (!me) return
-    const q = `%${sanitizeText(req.query.q ?? '', 100).toLowerCase()}%`
-    const results = db.prepare(`
-      SELECT u.id, u.username, u.avatar,
-        CASE
-          WHEN f.friend_id        IS NOT NULL THEN 'friend'
-          WHEN fr_in.requester_id IS NOT NULL THEN 'incoming'
-          WHEN fr_out.target_id   IS NOT NULL THEN 'sent'
-          ELSE 'none'
-        END AS status
-      FROM users u
+    const raw    = sanitizeText(req.query.q ?? '', 100).toLowerCase().trim()
+    const offset = Math.max(0, parseInt(req.query.offset) || 0)
+    const limit  = Math.min(40, Math.max(1, parseInt(req.query.limit) || 30))
+
+    const statusCase = `
+      CASE
+        WHEN f.friend_id        IS NOT NULL THEN 'friend'
+        WHEN fr_in.requester_id IS NOT NULL THEN 'incoming'
+        WHEN fr_out.target_id   IS NOT NULL THEN 'sent'
+        ELSE 'none'
+      END AS status`
+
+    const joins = `
       LEFT JOIN friends         f      ON f.user_id          = ? AND f.friend_id        = u.id
       LEFT JOIN friend_requests fr_in  ON fr_in.target_id    = ? AND fr_in.requester_id = u.id
-      LEFT JOIN friend_requests fr_out ON fr_out.requester_id = ? AND fr_out.target_id   = u.id
-      WHERE u.verified = 1 AND u.id != ? AND (u.searchable = 1 OR u.id = ?)
-        AND (LOWER(u.username) LIKE ? OR LOWER(u.email) LIKE ?)
-      LIMIT 20
-    `).all(me.id, me.id, me.id, me.id, me.id, q, q)
+      LEFT JOIN friend_requests fr_out ON fr_out.requester_id = ? AND fr_out.target_id   = u.id`
+
+    let results
+    if (raw.length === 0) {
+      // Global discover: return all searchable verified users, friends first
+      results = db.prepare(`
+        SELECT u.id, u.username, u.avatar, u.premium, ${statusCase}
+        FROM users u ${joins}
+        WHERE u.verified = 1 AND u.id != ? AND u.searchable = 1
+        ORDER BY CASE WHEN f.friend_id IS NOT NULL THEN 0 ELSE 1 END, u.username COLLATE NOCASE
+        LIMIT ? OFFSET ?
+      `).all(me.id, me.id, me.id, me.id, limit, offset)
+    } else {
+      const q = `%${raw}%`
+      results = db.prepare(`
+        SELECT u.id, u.username, u.avatar, u.premium, ${statusCase}
+        FROM users u ${joins}
+        WHERE u.verified = 1 AND u.id != ? AND (u.searchable = 1 OR u.id = ?)
+          AND (LOWER(u.username) LIKE ? OR LOWER(u.email) LIKE ?)
+        ORDER BY CASE WHEN LOWER(u.username) LIKE ? THEN 0 ELSE 1 END, u.username COLLATE NOCASE
+        LIMIT ? OFFSET ?
+      `).all(me.id, me.id, me.id, me.id, me.id, me.id, q, q, `${raw}%`, limit, offset)
+    }
     res.json({ users: results })
   })
 

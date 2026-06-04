@@ -169,6 +169,26 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gmsg_reactions  ON group_message_reactions(message_id);
 `)
 
+// ── Premium codes ─────────────────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS premium_codes (
+    code       TEXT PRIMARY KEY,
+    max_uses   INTEGER DEFAULT -1,
+    used_count INTEGER DEFAULT 0,
+    reward     TEXT    NOT NULL DEFAULT 'premium_lifetime',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS code_redemptions (
+    code    TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    redeemed_at INTEGER NOT NULL,
+    PRIMARY KEY (code, user_id)
+  );
+`)
+// Seed the "winner" code (unlimited uses) if not already present
+db.prepare(`INSERT OR IGNORE INTO premium_codes (code, max_uses, reward, created_at) VALUES (?,?,?,?)`)
+  .run('winner', -1, 'premium_lifetime', Date.now())
+
 // ── Safe column migrations (idempotent) ───────────────────────────────────────
 const migrations = [
   'ALTER TABLE vlogs ADD COLUMN title TEXT',
@@ -185,6 +205,8 @@ const migrations = [
   'ALTER TABLE users ADD COLUMN reset_token TEXT',
   'ALTER TABLE users ADD COLUMN reset_token_expires INTEGER',
   "ALTER TABLE vlogs ADD COLUMN visibility TEXT DEFAULT 'friends'",
+  'ALTER TABLE users ADD COLUMN premium INTEGER DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN streak_freeze_month TEXT',
 ]
 for (const sql of migrations) {
   try { db.exec(sql) } catch { /* column already exists */ }
