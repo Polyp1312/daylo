@@ -122,7 +122,7 @@ function Welcome({ onLogin, onRegister }) {
             <span className="font-black tracking-tighter text-white" style={{ fontSize: 52, lineHeight: 1 }}>daylo</span>
             <span className="font-black text-[#7B61FF]" style={{ fontSize: 52, lineHeight: 1 }}>.</span>
           </div>
-          <p className="text-[#8E8E93] text-base font-medium">Jeden Tag. Dein Leben. v2 ✓</p>
+          <p className="text-[#8E8E93] text-base font-medium">Jeden Tag. Eine Person. Dein Leben.</p>
         </motion.div>
 
         {/* Feature highlights */}
@@ -455,6 +455,7 @@ function Login({ onBack, onRegister, onForgot }) {
           style={{ color: '#7B61FF', background: 'rgba(123,97,255,0.1)', border: '1px solid rgba(123,97,255,0.2)' }}>
           Noch kein Konto? Registrieren
         </motion.button>
+        <p className="text-center text-[#3A3A3C] text-[10px] pt-1">Last update: 04.06.2026</p>
       </div>
     </FormPage>
   )
