@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, RefreshCw, Check, Sparkles, AlertCircle, Lock, Clock, Film } from 'lucide-react'
 import { api } from '../lib/api'
-import { saveClip, loadTodayClips, deleteClips } from '../lib/clipStore'
+import { saveClip, loadTodayClips, loadYesterdayClips, deleteClips } from '../lib/clipStore'
 import { useAuth } from '../context/AuthContext'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -14,11 +14,12 @@ const EMOJIS_VLOG = ['🌅','🎬','🏋️','🌄','🎉','🎵','🏖️','�
 const randEmoji   = () => EMOJIS_VLOG[Math.floor(Math.random() * EMOJIS_VLOG.length)]
 
 // ── Session start helpers (localStorage) ──────────────────────────────────────
-// Tracks when the first clip of the day was recorded → drives 24h countdown
-const sessionKey       = () => `daylo_sess_${new Date().toISOString().slice(0, 10)}`
-const getSessionStart  = ()  => { const v = localStorage.getItem(sessionKey()); return v ? +v : null }
-const saveSessionStart = t   => localStorage.setItem(sessionKey(), String(t))
-const clearSessionKey  = ()  => localStorage.removeItem(sessionKey())
+// Key is NOT date-based so a session that starts at 11pm and continues past
+// midnight (or after a long break) is still correctly tracked.
+const SESSION_KEY      = 'daylo_session_start'
+const getSessionStart  = ()  => { const v = localStorage.getItem(SESSION_KEY); return v ? +v : null }
+const saveSessionStart = t   => localStorage.setItem(SESSION_KEY, String(t))
+const clearSessionKey  = ()  => localStorage.removeItem(SESSION_KEY)
 
 const FILTERS = [
   { name: 'Normal',  css: 'none' },
@@ -642,11 +643,20 @@ export default function RecordView({ onBack, onDone }) {
   const remaining = Math.max(MAX_SEC - totalSec, 0)
   const progress  = Math.min(((totalSec + (isRecording ? liveTimer : 0)) / MAX_SEC) * 100, 100)
 
-  // ── Load today's clips from IndexedDB on mount ───────────────────────────────
+  // ── Load clips from IndexedDB on mount ──────────────────────────────────────
+  // If an active session exists (user recorded clips and hasn't submitted yet)
+  // we also load yesterday's clips so a session that crosses midnight or resumes
+  // after a long break is fully restored.
   useEffect(() => {
-    loadTodayClips().then(saved => {
-      if (!saved.length) return
-      const withKey = saved.map(c => ({ ...c, key: `idb_${c.idbId}` }))
+    const hasActiveSession = getSessionStart() !== null
+    const loaders = hasActiveSession
+      ? [loadYesterdayClips(), loadTodayClips()]   // session may span midnight
+      : [Promise.resolve([]),   loadTodayClips()]  // fresh start: today only
+
+    Promise.all(loaders).then(([older, newer]) => {
+      const all = [...older, ...newer]
+      if (!all.length) return
+      const withKey = all.map(c => ({ ...c, key: `idb_${c.idbId}` }))
       setClips(withKey)
       setTotalSec(withKey.reduce((s, c) => s + c.duration, 0))
     }).catch(() => {})
