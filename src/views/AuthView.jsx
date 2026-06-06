@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Mail, Lock, Eye, EyeOff, ChevronLeft, AlertCircle, CheckCircle, RefreshCw, Hash, AtSign, KeyRound } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
@@ -464,20 +464,78 @@ function Login({ onBack, onRegister, onForgot }) {
 // ── Verify Email ──────────────────────────────────────────────────────────────
 function VerifyEmail({ email, previewUrl, onBack }) {
   const { verifyCode } = useAuth()
-  const [input,   setInput]   = useState('')
-  const [error,   setError]   = useState('')
-  const [loading, setLoading] = useState(false)
+  const [digits,   setDigits]   = useState(Array(6).fill(''))
+  const [error,    setError]    = useState('')
+  const [loading,  setLoading]  = useState(false)
+  const [resent,   setResent]   = useState(false)
+  const [cooldown, setCooldown] = useState(0)
+  const inputRefs = useRef([])
+  const cooldownRef = useRef(null)
 
-  const handleVerify = async () => {
-    if (input.length !== 6) { setError('Bitte den 6-stelligen Code eingeben.'); return }
+  const code = digits.join('')
+
+  const handleVerify = async (codeOverride) => {
+    const c = codeOverride ?? code
+    if (c.length !== 6) { setError('Bitte alle 6 Ziffern eingeben.'); return }
     setLoading(true); setError('')
-    const result = await verifyCode(email, input)
+    const result = await verifyCode(email, c)
     setLoading(false)
-    if (result.error) setError(result.error)
+    if (result?.error) {
+      setError(result.error)
+      // Clear boxes on wrong code so user can retype quickly
+      setDigits(Array(6).fill(''))
+      setTimeout(() => inputRefs.current[0]?.focus(), 50)
+    }
   }
 
-  // Split digits for styled OTP input preview
-  const digits = input.padEnd(6, ' ').split('')
+  const handleChange = (i, val) => {
+    const digit = val.replace(/\D/g, '').slice(-1)
+    const next  = digits.map((d, idx) => idx === i ? digit : d)
+    setDigits(next)
+    setError('')
+    if (digit && i < 5) inputRefs.current[i + 1]?.focus()
+    if (next.every(d => d)) handleVerify(next.join(''))
+  }
+
+  const handleKeyDown = (i, e) => {
+    if (e.key === 'Backspace') {
+      if (digits[i]) {
+        setDigits(prev => prev.map((d, idx) => idx === i ? '' : d))
+      } else if (i > 0) {
+        inputRefs.current[i - 1]?.focus()
+        setDigits(prev => prev.map((d, idx) => idx === i - 1 ? '' : d))
+      }
+    } else if (e.key === 'ArrowLeft'  && i > 0) inputRefs.current[i - 1]?.focus()
+    else if   (e.key === 'ArrowRight' && i < 5) inputRefs.current[i + 1]?.focus()
+  }
+
+  const handlePaste = (e) => {
+    e.preventDefault()
+    const paste = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6)
+    if (!paste) return
+    const next = Array(6).fill('')
+    paste.split('').forEach((c, i) => { next[i] = c })
+    setDigits(next)
+    inputRefs.current[Math.min(paste.length, 5)]?.focus()
+    if (paste.length === 6) handleVerify(paste)
+  }
+
+  const handleResend = async () => {
+    if (cooldown > 0) return
+    try {
+      await api.resendCode(email)
+      setResent(true)
+      setDigits(Array(6).fill(''))
+      inputRefs.current[0]?.focus()
+      setCooldown(60)
+      clearInterval(cooldownRef.current)
+      cooldownRef.current = setInterval(() => {
+        setCooldown(c => { if (c <= 1) { clearInterval(cooldownRef.current); return 0 } return c - 1 })
+      }, 1000)
+    } catch (err) {
+      setError(err.message ?? 'Fehler beim Senden.')
+    }
+  }
 
   return (
     <motion.div key="verify" {...slide(1)}
@@ -491,92 +549,106 @@ function VerifyEmail({ email, previewUrl, onBack }) {
 
         {/* Icon */}
         <motion.div
-          initial={{ scale: 0, rotate: -30 }}
-          animate={{ scale: 1, rotate: 0 }}
+          initial={{ scale: 0, rotate: -30 }} animate={{ scale: 1, rotate: 0 }}
           transition={{ type: 'spring', damping: 14, stiffness: 180, delay: 0.1 }}
-          className="w-24 h-24 rounded-3xl mx-auto mb-6 flex items-center justify-center"
+          className="w-20 h-20 rounded-3xl mx-auto mb-6 flex items-center justify-center"
           style={{
             background: 'linear-gradient(135deg, rgba(123,97,255,0.2), rgba(0,217,255,0.15))',
             border: '1.5px solid rgba(123,97,255,0.35)',
             boxShadow: '0 0 40px rgba(123,97,255,0.2)',
           }}>
-          <Mail size={36} className="text-[#7B61FF]" />
+          <Mail size={30} className="text-[#7B61FF]" />
         </motion.div>
 
-        <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
-          <h2 className="text-white font-black text-2xl mb-2">E-Mail bestätigen</h2>
+        <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+          className="mb-7">
+          <h2 className="text-white font-black text-[26px] mb-2">Code eingeben</h2>
           <p className="text-[#8E8E93] text-sm leading-relaxed">
-            Wir haben einen Code an{' '}
-            <span className="text-white font-semibold">{email}</span>{' '}
+            Wir haben einen 6-stelligen Code an{' '}
+            <span className="text-white font-semibold break-all">{email}</span>{' '}
             gesendet.
           </p>
+        </motion.div>
+
+        {/* ── 6 OTP boxes ── */}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
+          className="flex gap-2 justify-center mb-5">
+          {digits.map((d, i) => (
+            <input
+              key={i}
+              ref={el => { inputRefs.current[i] = el }}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={1}
+              value={d}
+              autoFocus={i === 0}
+              disabled={loading}
+              onChange={e => handleChange(i, e.target.value)}
+              onKeyDown={e => handleKeyDown(i, e)}
+              onPaste={handlePaste}
+              onFocus={e => e.target.select()}
+              className="w-12 h-14 text-center text-2xl font-black rounded-2xl outline-none transition-all duration-150 disabled:opacity-40"
+              style={{
+                background:  d ? 'rgba(123,97,255,0.18)' : 'rgba(28,28,30,0.9)',
+                border:      `2px solid ${d ? 'rgba(123,97,255,0.7)' : 'rgba(255,255,255,0.09)'}`,
+                color:       'white',
+                caretColor:  'transparent',
+                boxShadow:   d ? '0 0 12px rgba(123,97,255,0.2)' : 'none',
+              }}
+            />
+          ))}
         </motion.div>
 
         {previewUrl && (
           <motion.a
             href={previewUrl} target="_blank" rel="noopener noreferrer"
             initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.35 }}
-            className="mt-5 w-full flex items-center gap-3 rounded-2xl px-4 py-3.5 text-left block"
-            style={{ background: 'rgba(123,97,255,0.1)', border: '1px solid rgba(123,97,255,0.25)' }}>
-            <div className="w-9 h-9 rounded-xl bg-[#7B61FF]/20 flex items-center justify-center flex-shrink-0">
-              <Mail size={16} className="text-[#7B61FF]" />
+            transition={{ delay: 0.38 }}
+            className="mb-4 w-full flex items-center gap-3 rounded-2xl px-4 py-3 text-left"
+            style={{ background: 'rgba(123,97,255,0.08)', border: '1px solid rgba(123,97,255,0.2)' }}>
+            <div className="w-8 h-8 rounded-xl bg-[#7B61FF]/15 flex items-center justify-center flex-shrink-0">
+              <Mail size={14} className="text-[#7B61FF]" />
             </div>
             <div>
-              <p className="text-[#7B61FF] text-sm font-bold">E-Mail ansehen →</p>
-              <p className="text-[#8E8E93] text-xs mt-0.5">Klicke hier um deinen Code zu sehen</p>
+              <p className="text-[#7B61FF] text-sm font-bold">E-Mail im Browser ansehen →</p>
+              <p className="text-[#8E8E93] text-[11px] mt-0.5">Code direkt aus der E-Mail kopieren</p>
             </div>
           </motion.a>
         )}
 
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
-          className="mt-6 space-y-4">
+        <AnimatePresence>
+          {resent && (
+            <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="mb-3 flex items-center gap-2 justify-center">
+              <CheckCircle size={14} className="text-[#2ECC71]" />
+              <span className="text-[#2ECC71] text-sm font-semibold">Neuer Code gesendet!</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-          {/* Styled digit display */}
-          <div className="flex gap-2 justify-center mb-2">
-            {digits.map((d, i) => (
-              <div key={i}
-                className="w-11 h-13 rounded-xl flex items-center justify-center text-xl font-black transition-all"
-                style={{
-                  height: 52,
-                  background: d.trim() ? 'rgba(123,97,255,0.2)' : 'rgba(28,28,30,0.8)',
-                  border: `1.5px solid ${d.trim() ? 'rgba(123,97,255,0.6)' : 'rgba(255,255,255,0.07)'}`,
-                  color: d.trim() ? '#ffffff' : 'transparent',
-                }}>
-                {d.trim() || '·'}
-              </div>
-            ))}
-          </div>
+        <ErrorBox msg={error} />
 
-          {/* Hidden actual input */}
-          <div className="flex items-center gap-3 rounded-2xl px-4 py-3.5"
-            style={{ background: 'rgba(28,28,30,0.8)', border: '1.5px solid rgba(255,255,255,0.07)' }}>
-            <Hash size={16} className="text-[#8E8E93] flex-shrink-0" />
-            <input
-              type="text" inputMode="numeric" pattern="[0-9]*"
-              value={input}
-              onChange={e => setInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              onKeyDown={e => e.key === 'Enter' && handleVerify()}
-              placeholder="6-stelligen Code eingeben"
-              autoFocus
-              className="flex-1 bg-transparent text-white placeholder-[#3A3A3C] text-sm outline-none tracking-widest"
-              style={{ caretColor: '#7B61FF' }}
-            />
-          </div>
+        <motion.button whileTap={{ scale: 0.97 }} onClick={() => handleVerify()}
+          disabled={loading || code.length !== 6}
+          className="w-full py-4 rounded-2xl font-black text-white text-base mt-3 disabled:opacity-45 flex items-center justify-center gap-2"
+          style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 24px rgba(123,97,255,0.35)' }}>
+          {loading
+            ? <><RefreshCw size={16} className="animate-spin" /> Wird geprüft…</>
+            : 'Bestätigen →'}
+        </motion.button>
 
-          <ErrorBox msg={error} />
-
-          <motion.button whileTap={{ scale: 0.97 }} onClick={handleVerify} disabled={loading || input.length !== 6}
-            className="w-full py-4 rounded-2xl font-black text-white text-base disabled:opacity-50 flex items-center justify-center gap-2"
-            style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 24px rgba(123,97,255,0.35)' }}>
-            {loading ? <><RefreshCw size={16} className="animate-spin" /> Prüfe Code…</> : 'Bestätigen →'}
+        <div className="mt-3 space-y-1">
+          <motion.button whileTap={{ scale: 0.97 }} onClick={handleResend} disabled={cooldown > 0}
+            className="w-full py-3 text-sm font-semibold transition-colors"
+            style={{ color: cooldown > 0 ? '#3A3A3C' : '#7B61FF' }}>
+            {cooldown > 0 ? `Code erneut senden (${cooldown}s)` : 'Code erneut senden'}
           </motion.button>
-
           <motion.button whileTap={{ scale: 0.97 }} onClick={onBack}
             className="w-full py-3 text-[#8E8E93] text-sm font-medium">
             ← Zurück zur Anmeldung
           </motion.button>
-        </motion.div>
+        </div>
       </div>
     </motion.div>
   )

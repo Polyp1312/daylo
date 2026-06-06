@@ -1,28 +1,36 @@
-// v8 — 24h clip collection + tap-to-toggle record button
+// v9 — ClipsPanel + 24h session timer + auto-trigger on 60s / 24h
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, RefreshCw, Check, Sparkles, AlertCircle, Pencil, Lock } from 'lucide-react'
+import { X, RefreshCw, Check, Sparkles, AlertCircle, Lock, Clock, Film } from 'lucide-react'
 import { api } from '../lib/api'
 import { saveClip, loadTodayClips, deleteClips } from '../lib/clipStore'
 import { useAuth } from '../context/AuthContext'
 
-const FREE_MAX_SEC     = 60
-const PREMIUM_MAX_SEC  = 90
+// ── Constants ──────────────────────────────────────────────────────────────────
+const FREE_MAX_SEC      = 60
+const PREMIUM_MAX_SEC   = 90
 const FREE_FILTER_COUNT = 5
 const EMOJIS_VLOG = ['🌅','🎬','🏋️','🌄','🎉','🎵','🏖️','🌙','🍕','🎮','🚀','🌸']
-const randEmoji = () => EMOJIS_VLOG[Math.floor(Math.random() * EMOJIS_VLOG.length)]
+const randEmoji   = () => EMOJIS_VLOG[Math.floor(Math.random() * EMOJIS_VLOG.length)]
+
+// ── Session start helpers (localStorage) ──────────────────────────────────────
+// Tracks when the first clip of the day was recorded → drives 24h countdown
+const sessionKey       = () => `daylo_sess_${new Date().toISOString().slice(0, 10)}`
+const getSessionStart  = ()  => { const v = localStorage.getItem(sessionKey()); return v ? +v : null }
+const saveSessionStart = t   => localStorage.setItem(sessionKey(), String(t))
+const clearSessionKey  = ()  => localStorage.removeItem(sessionKey())
 
 const FILTERS = [
   { name: 'Normal',  css: 'none' },
-  { name: 'Vivid',   css: 'saturate(2) contrast(1.15)' },
-  { name: 'Warm',    css: 'sepia(0.5) saturate(1.8) brightness(1.08)' },
-  { name: 'Cool',    css: 'hue-rotate(25deg) saturate(1.5) brightness(0.96)' },
-  { name: 'B&W',     css: 'grayscale(1) contrast(1.3)' },
-  { name: 'Fade',    css: 'contrast(0.7) brightness(1.3) saturate(0.55)' },
-  { name: 'Neon',    css: 'hue-rotate(265deg) saturate(2.8) brightness(1.2)' },
-  { name: 'Drama',   css: 'contrast(1.5) saturate(0.7) brightness(0.88)' },
-  { name: 'Golden',  css: 'sepia(0.6) saturate(2) hue-rotate(-15deg) brightness(1.1)' },
-  { name: 'Cyber',   css: 'hue-rotate(150deg) saturate(2) contrast(1.2)' },
+  { name: 'Vivid',   css: 'saturate(1.65) contrast(1.1) brightness(1.04)' },
+  { name: 'Warm',    css: 'sepia(0.38) saturate(1.65) brightness(1.07) contrast(1.05)' },
+  { name: 'Cool',    css: 'hue-rotate(22deg) saturate(1.45) brightness(0.97) contrast(1.1)' },
+  { name: 'B&W',     css: 'grayscale(1) contrast(1.22) brightness(1.06)' },
+  { name: 'Fade',    css: 'contrast(0.78) brightness(1.28) saturate(0.48)' },
+  { name: 'Neon',    css: 'hue-rotate(265deg) saturate(3.2) brightness(1.12) contrast(1.12)' },
+  { name: 'Drama',   css: 'contrast(1.48) saturate(0.68) brightness(0.87)' },
+  { name: 'Golden',  css: 'sepia(0.48) saturate(2.1) hue-rotate(-18deg) brightness(1.08) contrast(1.05)' },
+  { name: 'Cyber',   css: 'hue-rotate(155deg) saturate(2.4) contrast(1.18) brightness(1.06)' },
 ]
 
 const EMOJIS = [
@@ -32,9 +40,228 @@ const EMOJIS = [
 
 const formatDur = secs => {
   if (secs < 60) return `${Math.round(secs)}s`
-  const m = Math.floor(secs / 60)
-  const s = Math.round(secs % 60)
+  const m = Math.floor(secs / 60); const s = Math.round(secs % 60)
   return s > 0 ? `${m}m ${s}s` : `${m}m`
+}
+
+function fmt24h(ms) {
+  if (ms <= 0) return '00:00:00'
+  const h = Math.floor(ms / 3_600_000)
+  const m = Math.floor((ms % 3_600_000) / 60_000)
+  const s = Math.floor((ms % 60_000) / 1_000)
+  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+// ── Clips Panel ────────────────────────────────────────────────────────────────
+// Slide-up sheet that shows all clips for today, allows reorder + delete + submit
+function ClipsPanel({ clips, totalSec, maxSec, sessionStart, onClose, onDelete, onMove, onSubmit }) {
+  const listRef = useRef(null)
+  const [countdown, setCountdown] = useState('')
+
+  // Scroll to bottom when new clip is added
+  useEffect(() => {
+    if (clips.length > 0) {
+      listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
+    }
+  }, [clips.length])
+
+  // Live 24h countdown display
+  useEffect(() => {
+    if (!sessionStart) { setCountdown(''); return }
+    const deadline = sessionStart + 24 * 3_600_000
+    const tick = () => setCountdown(fmt24h(Math.max(0, deadline - Date.now())))
+    tick()
+    const t = setInterval(tick, 1_000)
+    return () => clearInterval(t)
+  }, [sessionStart])
+
+  const progress = Math.min((totalSec / maxSec) * 100, 100)
+  const full = progress >= 100
+
+  return (
+    <>
+      {/* Backdrop */}
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-30"
+        style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(6px)' }}
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <motion.div
+        initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 30, stiffness: 320 }}
+        className="fixed inset-x-0 bottom-0 z-40 flex flex-col rounded-t-[28px] overflow-hidden"
+        style={{
+          height: '84vh',
+          background: '#141415',
+          border: '1px solid rgba(255,255,255,0.09)',
+          boxShadow: '0 -24px 80px rgba(0,0,0,0.8)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Drag handle */}
+        <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
+          <div className="w-10 h-1 rounded-full bg-[#3A3A3C]" />
+        </div>
+
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 pt-2 pb-3 flex-shrink-0">
+          <div>
+            <h2 className="text-white font-black text-xl leading-tight">Meine Clips</h2>
+            <p className="text-[#8E8E93] text-xs mt-0.5">
+              {clips.length} Clip{clips.length !== 1 ? 's' : ''}
+              {clips.length > 0 && ` · ${formatDur(totalSec)} aufgenommen`}
+            </p>
+          </div>
+          <motion.button whileTap={{ scale: 0.85 }} onClick={onClose}
+            className="w-9 h-9 rounded-full bg-[#2C2C2E] flex items-center justify-center flex-shrink-0 mt-0.5">
+            <X size={15} className="text-[#8E8E93]" />
+          </motion.button>
+        </div>
+
+        {/* Progress bar + countdown */}
+        <div className="px-5 mb-3 flex-shrink-0">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-semibold text-[#8E8E93] uppercase tracking-widest">Tagesfortschritt</span>
+            <span className="text-xs font-black tabular-nums" style={{ color: full ? '#2ECC71' : '#7B61FF' }}>
+              {Math.round(totalSec)}s / {maxSec}s
+            </span>
+          </div>
+          <div className="h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(44,44,46,0.8)' }}>
+            <motion.div
+              className="h-full rounded-full"
+              style={{ background: full ? 'linear-gradient(90deg, #2ECC71, #00D9FF)' : 'linear-gradient(90deg, #7B61FF, #00D9FF)' }}
+              animate={{ width: `${progress}%` }}
+              transition={{ duration: 0.5, ease: 'easeOut' }}
+            />
+          </div>
+
+          <AnimatePresence>
+            {full && (
+              <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="mt-2 rounded-xl px-3 py-2 flex items-center gap-2"
+                style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)' }}>
+                <span className="text-sm">🎉</span>
+                <span className="text-xs text-[#2ECC71] font-bold">60 Sekunden erreicht! Jetzt abgeben.</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {countdown && !full && (
+            <div className="flex items-center gap-1.5 mt-2">
+              <Clock size={11} className="text-[#8E8E93] flex-shrink-0" />
+              <span className="text-[11px] text-[#8E8E93]">
+                Auto-Abgabe in{' '}
+                <span className="text-white font-bold font-mono">{countdown}</span>
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="h-px bg-[#2C2C2E] mx-5 mb-1 flex-shrink-0" />
+
+        {/* Clip list */}
+        {clips.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-5 px-10">
+            <motion.div
+              animate={{ scale: [1, 1.04, 1], opacity: [0.5, 0.8, 0.5] }}
+              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+              className="w-24 h-24 rounded-3xl flex items-center justify-center"
+              style={{ background: 'rgba(123,97,255,0.1)', border: '2px dashed rgba(123,97,255,0.3)' }}>
+              <Film size={36} className="text-[#7B61FF]/50" />
+            </motion.div>
+            <div className="text-center">
+              <p className="text-white font-bold text-base mb-1">Noch keine Clips</p>
+              <p className="text-[#8E8E93] text-sm leading-relaxed">
+                Tippe auf den weißen Knopf um deinen ersten Moment aufzunehmen!
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div ref={listRef} className="flex-1 overflow-y-auto px-5 py-2 space-y-2.5 min-h-0">
+            <AnimatePresence initial={false}>
+              {clips.map((clip, i) => (
+                <motion.div
+                  key={clip.key ?? i}
+                  layout
+                  initial={{ opacity: 0, x: -20, height: 0 }}
+                  animate={{ opacity: 1, x: 0, height: 'auto' }}
+                  exit={{ opacity: 0, x: 20, height: 0 }}
+                  transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+                  className="flex items-center gap-3 rounded-2xl p-3"
+                  style={{ background: 'rgba(28,28,30,0.95)', border: '1px solid rgba(255,255,255,0.06)' }}
+                >
+                  {/* Clip number pill */}
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(123,97,255,0.18)', border: '1px solid rgba(123,97,255,0.3)' }}>
+                    <span className="text-[10px] font-black text-[#7B61FF]">{i + 1}</span>
+                  </div>
+
+                  {/* Thumbnail */}
+                  <div className="w-11 h-[60px] rounded-xl overflow-hidden flex-shrink-0"
+                    style={{ border: '1.5px solid rgba(255,255,255,0.1)' }}>
+                    {clip.thumbUrl
+                      ? <img src={clip.thumbUrl} alt="" className="w-full h-full object-cover" />
+                      : <div className="w-full h-full bg-[#2C2C2E] flex items-center justify-center">
+                          <Film size={12} className="text-[#3A3A3C]" />
+                        </div>}
+                  </div>
+
+                  {/* Duration */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-sm font-semibold">Clip {i + 1}</p>
+                    <p className="text-[#8E8E93] text-xs font-mono mt-0.5">{clip.duration.toFixed(1)}s</p>
+                  </div>
+
+                  {/* Reorder buttons */}
+                  <div className="flex flex-col gap-1 flex-shrink-0">
+                    <motion.button whileTap={{ scale: 0.8 }}
+                      onClick={() => onMove(i, -1)} disabled={i === 0}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center transition-opacity disabled:opacity-20"
+                      style={{ background: 'rgba(255,255,255,0.07)' }}>
+                      <span className="text-white/80 text-sm leading-none select-none">↑</span>
+                    </motion.button>
+                    <motion.button whileTap={{ scale: 0.8 }}
+                      onClick={() => onMove(i, 1)} disabled={i === clips.length - 1}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center transition-opacity disabled:opacity-20"
+                      style={{ background: 'rgba(255,255,255,0.07)' }}>
+                      <span className="text-white/80 text-sm leading-none select-none">↓</span>
+                    </motion.button>
+                  </div>
+
+                  {/* Delete */}
+                  <motion.button whileTap={{ scale: 0.82 }} onClick={() => onDelete(i)}
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(255,69,58,0.11)', border: '1px solid rgba(255,69,58,0.22)' }}>
+                    <X size={14} className="text-red-400" />
+                  </motion.button>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {/* Submit button */}
+        <div className="px-5 pt-3 pb-10 flex-shrink-0"
+          style={{ borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(20,20,21,0.98)' }}>
+          <motion.button
+            whileTap={{ scale: 0.97 }}
+            onClick={onSubmit}
+            disabled={clips.length === 0}
+            className="w-full py-4 rounded-2xl font-black text-white text-sm disabled:opacity-35 flex items-center justify-center gap-2.5"
+            style={{
+              background: clips.length > 0 ? 'linear-gradient(135deg, #7B61FF, #00D9FF)' : 'rgba(123,97,255,0.25)',
+              boxShadow:  clips.length > 0 ? '0 0 32px rgba(123,97,255,0.45)' : 'none',
+            }}>
+            <Sparkles size={17} />
+            {clips.length === 0 ? 'Noch keine Clips' : 'Jetzt abgeben →'}
+          </motion.button>
+        </div>
+      </motion.div>
+    </>
+  )
 }
 
 // ── Upload / Processing Screen ─────────────────────────────────────────────────
@@ -103,7 +330,7 @@ function TitleScreen({ firstThumb, onSkip, onConfirm }) {
               autoFocus
               value={title}
               onChange={e => setTitle(e.target.value.slice(0, 60))}
-              onKeyDown={e => e.key === 'Enter' && onConfirm(title.trim())}
+              onKeyDown={e => e.key === 'Enter' && onConfirm(title.trim(), visibility)}
               placeholder="Beschreibe deinen Tag…"
               className="w-full bg-transparent text-white placeholder-white/25 text-lg font-semibold text-center outline-none"
               style={{ caretColor: 'white' }}
@@ -179,7 +406,6 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
         const duration = clips.reduce((s, c) => s + (c.duration ?? 0), 0)
         const formData = new FormData()
 
-        // Send each clip individually — server does proper ffmpeg concat + grade
         for (let i = 0; i < clips.length; i++) {
           const ext = clips[i].blob?.type?.includes('mp4') ? 'mp4' : 'webm'
           formData.append(`clip_${i}`, clips[i].blob, `clip_${i}.${ext}`)
@@ -206,7 +432,6 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
     return () => { cancelled = true }
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Error state ──
   if (error) return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
       className="fixed inset-0 z-50 flex flex-col items-center justify-center px-10 gap-6"
@@ -230,7 +455,7 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
     </motion.div>
   )
 
-  const done = step === 2
+  const done     = step === 2
   const barWidth = done ? '100%' : step === 0 ? '6%' : `${12 + progress * 0.83}%`
 
   return (
@@ -238,13 +463,11 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
       className="fixed inset-0 z-50 flex flex-col items-center justify-center px-8"
       style={{ background: 'radial-gradient(ellipse at 50% 20%, rgba(123,97,255,0.22) 0%, #080809 55%)' }}>
 
-      {/* Ambient glow */}
       <motion.div className="absolute top-0 left-1/2 -translate-x-1/2 w-[500px] h-64 rounded-full blur-3xl pointer-events-none"
         style={{ background: 'rgba(123,97,255,0.12)' }}
         animate={{ opacity: [0.8, 1.2, 0.8] }}
         transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }} />
 
-      {/* Icon */}
       <div className="relative mb-10">
         <AnimatePresence mode="wait">
           {!done ? (
@@ -252,15 +475,12 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
               initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.6 }}
               className="relative w-36 h-36 flex items-center justify-center">
-              {/* Outer ring */}
               <motion.div className="absolute inset-0 rounded-full"
                 style={{ border: '3px solid transparent', borderTopColor: '#7B61FF', borderRightColor: '#00D9FF' }}
                 animate={{ rotate: 360 }} transition={{ duration: 1.1, repeat: Infinity, ease: 'linear' }} />
-              {/* Inner ring */}
               <motion.div className="absolute inset-4 rounded-full"
                 style={{ border: '2px solid transparent', borderTopColor: '#00D9FF', borderBottomColor: '#7B61FF80' }}
                 animate={{ rotate: -360 }} transition={{ duration: 1.8, repeat: Infinity, ease: 'linear' }} />
-              {/* Icon center */}
               <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
                 style={{ background: 'rgba(123,97,255,0.15)', border: '1px solid rgba(123,97,255,0.3)' }}>
                 <span className="text-4xl select-none">🎬</span>
@@ -277,7 +497,6 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
                 boxShadow: '0 0 60px rgba(46,204,113,0.55), 0 0 120px rgba(0,217,255,0.2)',
               }}>
               <Check size={56} className="text-white" strokeWidth={2.5} />
-              {/* Pulse rings */}
               {[1.3, 1.6].map((s, i) => (
                 <motion.div key={i} className="absolute inset-0 rounded-full"
                   style={{ border: '2px solid rgba(46,204,113,0.35)' }}
@@ -289,7 +508,6 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
         </AnimatePresence>
       </div>
 
-      {/* Text */}
       <AnimatePresence mode="wait">
         {done ? (
           <motion.div key="done-text"
@@ -313,15 +531,12 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
         )}
       </AnimatePresence>
 
-      {/* Steps */}
       <div className="w-full space-y-4 mb-10">
         {UPLOAD_STEPS.map((s, i) => {
           const isDone    = step > i
           const isCurrent = step === i + 1 && !done
           return (
-            <motion.div key={i}
-              animate={{ opacity: step < i ? 0.35 : 1 }}
-              className="flex items-center gap-4">
+            <motion.div key={i} animate={{ opacity: step < i ? 0.35 : 1 }} className="flex items-center gap-4">
               <motion.div
                 animate={{
                   backgroundColor: isDone ? '#2ECC71' : isCurrent ? 'rgba(123,97,255,0.25)' : 'rgba(44,44,46,0.8)',
@@ -334,23 +549,18 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
                   <Check size={15} className="text-white" strokeWidth={2.5} />
                 ) : isCurrent ? (
                   <motion.div className="w-2.5 h-2.5 rounded-full bg-[#7B61FF]"
-                    animate={{ scale: [1, 1.6, 1] }}
-                    transition={{ duration: 0.9, repeat: Infinity }} />
+                    animate={{ scale: [1, 1.6, 1] }} transition={{ duration: 0.9, repeat: Infinity }} />
                 ) : (
                   <span className="text-[#3A3A3C] text-xs font-black">{i + 1}</span>
                 )}
               </motion.div>
-
               <motion.span
                 animate={{ color: isDone ? '#2ECC71' : isCurrent ? '#ffffff' : '#3A3A3C' }}
                 className="text-sm font-bold flex-1">
                 {s.label}
               </motion.span>
-
               {isCurrent && i === 1 && (
-                <motion.span
-                  key={progress}
-                  initial={{ scale: 1.2 }} animate={{ scale: 1 }}
+                <motion.span key={progress} initial={{ scale: 1.2 }} animate={{ scale: 1 }}
                   className="text-[#7B61FF] text-sm font-black tabular-nums">
                   {progress}%
                 </motion.span>
@@ -371,7 +581,6 @@ function ProcessingScreen({ clips, title, visibility = 'friends', onComplete }) 
         })}
       </div>
 
-      {/* Progress bar */}
       <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(44,44,46,0.6)' }}>
         <motion.div className="h-full rounded-full"
           style={{ background: 'linear-gradient(90deg, #7B61FF, #00D9FF)' }}
@@ -397,25 +606,37 @@ export default function RecordView({ onBack, onDone }) {
   const chunksRef   = useRef([])
   const startRef    = useRef(null)
 
-  const [facingMode,   setFacingMode]   = useState('user')
-  const [permission,   setPermission]   = useState('requesting')
-  const [isRecording,  setIsRecording]  = useState(false)
-  const [liveTimer,    setLiveTimer]    = useState(0)
-  const [clips,        setClips]        = useState([])
-  const [totalSec,     setTotalSec]     = useState(0)
+  // Guard refs for auto-triggers — ensure they fire at most once per session
+  const triggeredFullRef  = useRef(false)
+  const triggered24hRef   = useRef(false)
+
+  const [facingMode,     setFacingMode]     = useState('user')
+  const [permission,     setPermission]     = useState('requesting')
+  const [isRecording,    setIsRecording]    = useState(false)
+  const [liveTimer,      setLiveTimer]      = useState(0)
+  const [clips,          setClips]          = useState([])
+  const [totalSec,       setTotalSec]       = useState(0)
   const [processing,     setProcessing]     = useState(false)
   const [showTitle,      setShowTitle]      = useState(false)
+  const [showClipsPanel, setShowClipsPanel] = useState(false)
   const [vlogTitle,      setVlogTitle]      = useState('')
   const [vlogVisibility, setVlogVisibility] = useState('friends')
-  const [flash,        setFlash]        = useState(false)
-  const [switching,    setSwitching]    = useState(false)
-  const [filterIdx,    setFilterIdx]    = useState(0)
-  const [zoom,         setZoom]         = useState(1)
-  const [stickers,     setStickers]     = useState([])
-  const [activePanel,  setActivePanel]  = useState(null)
-  const [pendingEmoji, setPendingEmoji] = useState(null)
-  const [filterThumbs, setFilterThumbs] = useState(null)
-  const [showZoom,     setShowZoom]     = useState(false)
+  const [flash,          setFlash]          = useState(false)
+  const [switching,      setSwitching]      = useState(false)
+  const [filterIdx,      setFilterIdx]      = useState(() => {
+    const saved = parseInt(localStorage.getItem('yd_filterIdx') ?? '0', 10)
+    return isNaN(saved) ? 0 : Math.min(saved, FILTERS.length - 1)
+  })
+  const [focusPoint,     setFocusPoint]     = useState(null)
+  const [zoom,           setZoom]           = useState(1)
+  const [stickers,       setStickers]       = useState([])
+  const [activePanel,    setActivePanel]    = useState(null)
+  const [pendingEmoji,   setPendingEmoji]   = useState(null)
+  const [filterThumbs,   setFilterThumbs]   = useState(null)
+  const [showZoom,       setShowZoom]       = useState(false)
+
+  // 24h session start — loaded from localStorage so it persists across app restarts
+  const [sessionStart, setSessionStart] = useState(() => getSessionStart())
 
   const filterCSS = FILTERS[filterIdx].css
   const remaining = Math.max(MAX_SEC - totalSec, 0)
@@ -431,13 +652,70 @@ export default function RecordView({ onBack, onDone }) {
     }).catch(() => {})
   }, [])
 
+  // ── Save session start when first clip of the day is recorded ────────────────
+  useEffect(() => {
+    if (clips.length === 1 && !sessionStart) {
+      const t = Date.now()
+      saveSessionStart(t)
+      setSessionStart(t)
+    }
+  }, [clips.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Auto-trigger submission when 60s are reached ────────────────────────────
+  useEffect(() => {
+    if (
+      totalSec >= MAX_SEC &&
+      clips.length > 0 &&
+      !processing &&
+      !showTitle &&
+      !triggeredFullRef.current
+    ) {
+      triggeredFullRef.current = true
+      const t = setTimeout(() => {
+        setShowClipsPanel(false)
+        setShowTitle(true)
+      }, 700)
+      return () => clearTimeout(t)
+    }
+  }, [totalSec, clips.length, processing, showTitle, MAX_SEC])
+
+  // ── Auto-trigger submission after 24 h ──────────────────────────────────────
+  useEffect(() => {
+    if (!sessionStart || clips.length === 0 || triggered24hRef.current) return
+    const deadline   = sessionStart + 24 * 3_600_000
+    const msLeft     = deadline - Date.now()
+    if (msLeft <= 0) {
+      // Already past deadline when app reopened
+      triggered24hRef.current = true
+      setShowClipsPanel(false)
+      setShowTitle(true)
+      return
+    }
+    const t = setTimeout(() => {
+      triggered24hRef.current = true
+      setShowClipsPanel(false)
+      setShowTitle(true)
+    }, msLeft)
+    return () => clearTimeout(t)
+  }, [sessionStart, clips.length > 0]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Camera ──────────────────────────────────────────────────────────────────
   const startCamera = useCallback(async (mode) => {
     streamRef.current?.getTracks().forEach(t => t.stop())
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: mode, width: { ideal: 1080 }, height: { ideal: 1920 } },
-        audio: true,
+        video: {
+          facingMode: mode,
+          width:     { ideal: 1920, min: 720 },
+          height:    { ideal: 1080, min: 1280 },
+          frameRate: { ideal: 60, min: 30 },
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl:  false,
+          sampleRate:       { ideal: 48000 },
+        },
       })
       streamRef.current = stream
       if (videoRef.current) videoRef.current.srcObject = stream
@@ -456,10 +734,7 @@ export default function RecordView({ onBack, onDone }) {
 
   const videoCallbackRef = useCallback(el => {
     videoRef.current = el
-    if (el && streamRef.current) {
-      el.srcObject = streamRef.current
-      el.play().catch(() => {})
-    }
+    if (el && streamRef.current) { el.srcObject = streamRef.current; el.play().catch(() => {}) }
   }, [])
 
   const switchCamera = async () => {
@@ -496,6 +771,8 @@ export default function RecordView({ onBack, onDone }) {
       if (video.videoWidth) {
         canvas.width  = video.videoWidth
         canvas.height = video.videoHeight
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
         ctx.save()
         const srcW = video.videoWidth  / zoomLevel
         const srcH = video.videoHeight / zoomLevel
@@ -527,7 +804,7 @@ export default function RecordView({ onBack, onDone }) {
       if (totalSec + elapsed >= MAX_SEC) stopRecording()
     }, 80)
     return () => clearInterval(t)
-  }, [isRecording, totalSec])
+  }, [isRecording, totalSec]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Recording ────────────────────────────────────────────────────────────────
   const startRecording = useCallback(() => {
@@ -538,16 +815,18 @@ export default function RecordView({ onBack, onDone }) {
     const canvas = canvasRef.current
     const video  = videoRef.current
     const canCap = !!canvas?.captureStream
+    const hasEffect = filterCSS !== 'none' || stickers.length > 0 || zoom !== 1
 
     let recordStream = streamRef.current
-    if (canCap && video) {
+    if (canCap && video && hasEffect) {
       startCanvasDraw(canvas, video, filterCSS, stickers, zoom, facingMode === 'user')
-      const canvasStream = canvas.captureStream(30)
+      const canvasStream = canvas.captureStream(60)
       const audio = streamRef.current.getAudioTracks()
       recordStream = new MediaStream([...canvasStream.getVideoTracks(), ...audio])
+    } else {
+      stopDrawRef.current?.()
     }
 
-    // Pick best codec — VP8 typically gives ~3–4 Mbps at quality parity with VP9
     const mimeType = [
       'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
@@ -555,11 +834,10 @@ export default function RecordView({ onBack, onDone }) {
       'video/mp4',
     ].find(t => MediaRecorder.isTypeSupported(t)) ?? ''
 
-    // Cap bitrate to 2.5 Mbps video + 128 kbps audio → 60s ≈ 18 MB (was 100–300 MB)
     const mr = new MediaRecorder(recordStream, {
       ...(mimeType ? { mimeType } : {}),
-      videoBitsPerSecond: 2_500_000,
-      audioBitsPerSecond: 128_000,
+      videoBitsPerSecond: 4_000_000,
+      audioBitsPerSecond: 192_000,
     })
     mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
     mr.onstop = async () => {
@@ -571,12 +849,10 @@ export default function RecordView({ onBack, onDone }) {
       const url      = URL.createObjectURL(blob)
       const thumbUrl = await captureThumb(url)
       const safeDur  = Math.min(duration, remaining)
-      // Give each clip a stable key so we can update it with the idbId later
       const clipKey  = `new_${Date.now()}_${Math.random().toString(36).slice(2)}`
       const newClip  = { key: clipKey, url, blob, thumbUrl, duration: safeDur, idbId: null }
       setClips(prev => [...prev, newClip])
       setTotalSec(prev => Math.min(+(prev + safeDur).toFixed(2), MAX_SEC))
-      // Persist to IndexedDB so clips survive app close/reopen today
       saveClip({ blob, thumbUrl, duration: safeDur }).then(idbId => {
         setClips(prev => prev.map(c => c.key === clipKey ? { ...c, idbId } : c))
       }).catch(() => {})
@@ -599,6 +875,19 @@ export default function RecordView({ onBack, onDone }) {
     const next = clips.filter((_, idx) => idx !== i)
     setClips(next)
     setTotalSec(next.reduce((s, c) => s + c.duration, 0))
+    // If all clips deleted, reset session start + guards
+    if (next.length === 0) {
+      clearSessionKey()
+      setSessionStart(null)
+      triggeredFullRef.current = false
+      triggered24hRef.current  = false
+    }
+  }
+
+  const moveClip = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= clips.length) return
+    setClips(prev => { const next = [...prev]; [next[i], next[j]] = [next[j], next[i]]; return next })
   }
 
   const captureThumb = videoUrl => new Promise(resolve => {
@@ -611,16 +900,30 @@ export default function RecordView({ onBack, onDone }) {
     v.onerror      = () => resolve(null)
   })
 
-  // ── Sticker placement ────────────────────────────────────────────────────────
-  const onCameraClick = e => {
-    if (!pendingEmoji) return
+  // ── Sticker placement + Tap-to-Focus ─────────────────────────────────────────
+  const onCameraClick = async e => {
     const rect = e.currentTarget.getBoundingClientRect()
-    setStickers(prev => [...prev, {
-      id: Date.now(), emoji: pendingEmoji,
-      x: (e.clientX - rect.left) / rect.width,
-      y: (e.clientY - rect.top)  / rect.height,
-    }])
-    setPendingEmoji(null)
+    const x = (e.clientX - rect.left) / rect.width
+    const y = (e.clientY - rect.top)  / rect.height
+
+    if (pendingEmoji) {
+      setStickers(prev => [...prev, { id: Date.now(), emoji: pendingEmoji, x, y }])
+      setPendingEmoji(null)
+      return
+    }
+
+    setFocusPoint({ x, y })
+    setTimeout(() => setFocusPoint(null), 1600)
+    const track = streamRef.current?.getVideoTracks()[0]
+    if (track) {
+      try {
+        const caps = track.getCapabilities?.() ?? {}
+        const adv  = []
+        if (caps.focusMode?.includes('single-shot'))  adv.push({ focusMode: 'single-shot' })
+        if (caps.pointsOfInterest)                    adv.push({ pointsOfInterest: [{ x, y }] })
+        if (adv.length) await track.applyConstraints({ advanced: adv })
+      } catch {}
+    }
   }
 
   // ── Zoom show/hide ───────────────────────────────────────────────────────────
@@ -635,6 +938,8 @@ export default function RecordView({ onBack, onDone }) {
   return (
     <>
       <canvas ref={canvasRef} className="hidden" />
+
+      {/* ── Overlays ── */}
       <AnimatePresence>
         {showTitle && (
           <TitleScreen
@@ -649,11 +954,23 @@ export default function RecordView({ onBack, onDone }) {
             title={vlogTitle}
             visibility={vlogVisibility}
             onComplete={vlog => {
-              // Clear today's clips from IndexedDB after successful upload
               const idbIds = clips.map(c => c.idbId).filter(Boolean)
               deleteClips(idbIds).catch(() => {})
+              clearSessionKey()
               onDone(vlog)
             }}
+          />
+        )}
+        {showClipsPanel && (
+          <ClipsPanel
+            clips={clips}
+            totalSec={totalSec}
+            maxSec={MAX_SEC}
+            sessionStart={sessionStart}
+            onClose={() => setShowClipsPanel(false)}
+            onDelete={i => deleteClip(i)}
+            onMove={(i, dir) => moveClip(i, dir)}
+            onSubmit={() => { setShowClipsPanel(false); setShowTitle(true) }}
           />
         )}
       </AnimatePresence>
@@ -682,6 +999,24 @@ export default function RecordView({ onBack, onDone }) {
               {s.emoji}
             </motion.div>
           ))}
+
+          {/* Focus indicator */}
+          <AnimatePresence>
+            {focusPoint && (
+              <motion.div
+                key={`${focusPoint.x}-${focusPoint.y}`}
+                initial={{ opacity: 0, scale: 1.6 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.85 }}
+                transition={{ duration: 0.18 }}
+                className="absolute pointer-events-none z-10"
+                style={{
+                  left: `${focusPoint.x * 100}%`, top: `${focusPoint.y * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  width: 64, height: 64,
+                  border: '2px solid rgba(255,220,0,0.9)',
+                  borderRadius: 4, boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
+                }} />
+            )}
+          </AnimatePresence>
 
           {/* Flash */}
           <AnimatePresence>
@@ -715,7 +1050,8 @@ export default function RecordView({ onBack, onDone }) {
         {permission !== 'granted' && (
           <div className="absolute inset-0 bg-black flex flex-col items-center justify-center gap-3 z-20">
             {permission === 'requesting'
-              ? <><div className="w-10 h-10 rounded-full border-2 border-[#7B61FF] border-t-transparent animate-spin" /><span className="text-[#8E8E93] text-sm">Kamera wird gestartet…</span></>
+              ? <><div className="w-10 h-10 rounded-full border-2 border-[#7B61FF] border-t-transparent animate-spin" />
+                  <span className="text-[#8E8E93] text-sm">Kamera wird gestartet…</span></>
               : <><span className="text-5xl">🚫</span><p className="text-white font-semibold">Kamerazugriff verweigert</p></>}
           </div>
         )}
@@ -769,7 +1105,7 @@ export default function RecordView({ onBack, onDone }) {
                     const locked = !isPremium && i >= FREE_FILTER_COUNT
                     return (
                       <motion.button key={f.name} whileTap={locked ? {} : { scale: 0.88 }}
-                        onClick={() => locked ? null : setFilterIdx(i)}
+                        onClick={() => { if (locked) return; setFilterIdx(i); localStorage.setItem('yd_filterIdx', i) }}
                         className="flex-shrink-0 flex flex-col items-center gap-2"
                         style={{ opacity: locked ? 0.5 : 1 }}>
                         <div className="relative overflow-hidden rounded-2xl transition-all duration-200"
@@ -835,45 +1171,27 @@ export default function RecordView({ onBack, onDone }) {
             )}
           </AnimatePresence>
 
-          {/* "Heute gespeichert" badge — shows when IDB clips are loaded */}
+          {/* ── Clip summary chip (tap to open panel) ── */}
           <AnimatePresence>
             {clips.length > 0 && !isRecording && (
               <motion.div
-                initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
-                className="flex justify-center mb-2">
-                <div className="flex items-center gap-1.5 px-3 py-1 rounded-full"
-                  style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)' }}>
-                  <span className="text-[10px] text-white/50 font-medium">
-                    Heute: {clips.length} Clip{clips.length !== 1 ? 's' : ''} · {formatDur(totalSec)} aufgenommen
+                initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+                className="flex justify-center mb-3">
+                <motion.button
+                  whileTap={{ scale: 0.94 }}
+                  onClick={() => setShowClipsPanel(true)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-full"
+                  style={{
+                    background: 'rgba(0,0,0,0.6)',
+                    backdropFilter: 'blur(12px)',
+                    border: '1px solid rgba(255,255,255,0.14)',
+                  }}>
+                  <Film size={12} className="text-[#7B61FF]" />
+                  <span className="text-white/80 text-xs font-semibold">
+                    {clips.length} Clip{clips.length !== 1 ? 's' : ''} · {formatDur(totalSec)}
                   </span>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Clip strip */}
-          <AnimatePresence>
-            {clips.length > 0 && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                className="flex gap-2 px-4 mb-5 overflow-x-auto no-scrollbar">
-                {clips.map((clip, i) => (
-                  <motion.div key={clip.key ?? i} initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-                    className="flex-shrink-0 relative group" style={{ width: 42, height: 60 }}>
-                    <div className="w-full h-full rounded-xl overflow-hidden"
-                      style={{ border: '2px solid rgba(255,255,255,0.35)' }}>
-                      {clip.thumbUrl
-                        ? <img src={clip.thumbUrl} alt="" className="w-full h-full object-cover" />
-                        : <div className="w-full h-full bg-white/10" />}
-                    </div>
-                    <div className="absolute bottom-0 inset-x-0 bg-black/70 rounded-b-xl text-center py-0.5">
-                      <span className="text-[7px] text-white font-bold">{clip.duration.toFixed(1)}s</span>
-                    </div>
-                    <button onClick={() => deleteClip(i)}
-                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                      <X size={10} className="text-white" />
-                    </button>
-                  </motion.div>
-                ))}
+                  <span className="text-[#7B61FF] text-xs font-bold">ansehen →</span>
+                </motion.button>
               </motion.div>
             )}
           </AnimatePresence>
@@ -908,7 +1226,7 @@ export default function RecordView({ onBack, onDone }) {
               </motion.button>
             </div>
 
-            {/* Record button — tap to toggle, drag up to zoom */}
+            {/* Record button */}
             <TapRecordBtn
               isRecording={isRecording}
               disabled={permission !== 'granted' || totalSec >= MAX_SEC}
@@ -918,21 +1236,33 @@ export default function RecordView({ onBack, onDone }) {
               onStop={stopRecording}
               onZoom={setZoom} />
 
-            {/* Right: zusammenfügen */}
+            {/* Right: Clips button (shows panel) */}
             <div className="w-24 flex justify-end">
               <AnimatePresence>
-                {clips.length > 0 && (
+                {clips.length > 0 ? (
                   <motion.button
+                    key="clips-btn"
                     initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 0, opacity: 0 }}
                     whileTap={{ scale: 0.9 }}
-                    disabled={isRecording}
-                    onClick={() => setShowTitle(true)}
-                    className="w-16 h-16 rounded-2xl flex flex-col items-center justify-center gap-1 disabled:opacity-40"
-                    style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 28px rgba(123,97,255,0.55)' }}>
-                    <Sparkles size={22} className="text-white" />
-                    <span className="text-[9px] text-white font-bold leading-none">Fertig</span>
+                    onClick={() => setShowClipsPanel(true)}
+                    className="w-16 h-16 rounded-2xl flex flex-col items-center justify-center gap-1 relative"
+                    style={{
+                      background: 'rgba(0,0,0,0.5)',
+                      backdropFilter: 'blur(14px)',
+                      border: '1.5px solid rgba(255,255,255,0.18)',
+                    }}>
+                    {/* Badge */}
+                    <div className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center z-10"
+                      style={{ background: 'linear-gradient(135deg, #7B61FF, #00D9FF)', boxShadow: '0 0 8px rgba(123,97,255,0.7)' }}>
+                      <span className="text-[9px] text-white font-black leading-none">{clips.length}</span>
+                    </div>
+                    <Film size={20} className="text-white" />
+                    <span className="text-[9px] text-white/70 font-semibold leading-none">Clips</span>
                   </motion.button>
+                ) : (
+                  // Invisible placeholder to keep layout stable
+                  <div key="placeholder" className="w-16 h-16" />
                 )}
               </AnimatePresence>
             </div>
@@ -940,11 +1270,11 @@ export default function RecordView({ onBack, onDone }) {
 
           {/* Hint */}
           <p className="text-center text-white/40 text-[11px] mt-4 px-4">
-            {pendingEmoji     ? 'Tippe auf das Bild zum Platzieren'
-              : totalSec >= MAX_SEC ? '60 Sekunden erreicht'
-              : isRecording        ? 'Ziehen zum Zoomen · Nochmal tippen zum Stoppen'
-              : clips.length === 0 ? 'Tippen zum Aufnehmen · Ziehen zum Zoomen'
-              : 'Tippen für weiteren Clip · Fertig zum Zusammenfügen'}
+            {pendingEmoji          ? 'Tippe auf das Bild zum Platzieren'
+              : totalSec >= MAX_SEC ? `${MAX_SEC}s erreicht — Clips überprüfen`
+              : isRecording         ? 'Ziehen zum Zoomen · Nochmal tippen zum Stoppen'
+              : clips.length === 0  ? 'Tippen zum Aufnehmen · Ziehen zum Zoomen'
+              : 'Film-Symbol → Clips verwalten & abgeben'}
           </p>
         </div>
       </motion.div>
@@ -968,24 +1298,26 @@ function TapRecordBtn({ isRecording, disabled, progress, zoom, onStart, onStop, 
   const R    = 44
   const CIRC = 2 * Math.PI * R
 
-  const downRef = useRef(null)   // { y, z } at pointer-down
+  const downRef = useRef(null)
   const didDrag = useRef(false)
   const btnRef  = useRef(null)
 
   const onDown = e => {
     if (disabled) return
     e.preventDefault()
-    downRef.current  = { y: e.clientY, z: zoom }
-    didDrag.current  = false
+    downRef.current = { y: e.clientY, z: zoom }
+    didDrag.current = false
     btnRef.current?.setPointerCapture(e.pointerId)
   }
 
+  const SNAP_POINTS = [1, 1.5, 2, 3, 4]
   const onMove = e => {
     if (!downRef.current) return
     const dy = downRef.current.y - e.clientY
     if (Math.abs(dy) > 8) didDrag.current = true
-    const newZ = Math.min(4, Math.max(1, downRef.current.z + (dy / 180) * 3))
-    onZoom(parseFloat(newZ.toFixed(2)))
+    const raw    = Math.min(4, Math.max(1, downRef.current.z + (dy / 160) * 3))
+    const snapped = SNAP_POINTS.find(s => Math.abs(raw - s) < 0.12) ?? raw
+    onZoom(parseFloat(snapped.toFixed(2)))
   }
 
   const onUp = e => {
@@ -993,16 +1325,11 @@ function TapRecordBtn({ isRecording, disabled, progress, zoom, onStart, onStop, 
     if (!downRef.current) return
     downRef.current = null
     if (!didDrag.current) {
-      // Pure tap → toggle recording
-      if (isRecording) onStop()
-      else onStart()
+      if (isRecording) onStop(); else onStart()
     }
   }
 
-  const onCancel = () => {
-    downRef.current = null
-    didDrag.current = false
-  }
+  const onCancel = () => { downRef.current = null; didDrag.current = false }
 
   return (
     <div className="relative flex items-center justify-center" style={{ width: 112, height: 112 }}>
@@ -1051,7 +1378,6 @@ function TapRecordBtn({ isRecording, disabled, progress, zoom, onStart, onStop, 
           alignItems: 'center',
           justifyContent: 'center',
         }}>
-        {/* Inner shape: invisible circle when idle, white square when recording */}
         <motion.div
           animate={{
             width:        isRecording ? 30 : 0,

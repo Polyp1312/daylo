@@ -2,7 +2,7 @@ services:
   - type: web
     name: yourday
     runtime: node
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci && npm run build && pip install auto-editor --quiet
     startCommand: node server.js
     healthCheckPath: /api/push/vapid-key
     envVars:

@@ -30,23 +30,60 @@ const gmailClient  = (process.env.GMAIL_USER && process.env.GMAIL_PASS)
   : null
 
 async function sendEmail(to, subject, html) {
-  // 1. Try Resend (most reliable on cloud servers)
   if (resendClient) {
     const { error } = await resendClient.emails.send({
       from: 'daylo. <onboarding@resend.dev>',
-      to,
-      subject,
-      html,
+      to, subject, html,
     })
     if (!error) return
     console.warn('Resend-Fehler:', error.message)
   }
-  // 2. Fall back to Gmail
   if (gmailClient) {
     await gmailClient.sendMail({ from: `daylo. <${process.env.GMAIL_USER}>`, to, subject, html })
     return
   }
   throw new Error('Kein E-Mail-Provider konfiguriert.')
+}
+
+// ── Branded email templates ───────────────────────────────────────────────────
+function emailVerifyHtml(code) {
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0a0a0b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0b;padding:48px 20px">
+<tr><td align="center">
+<table width="100%" style="max-width:460px;background:#141415;border-radius:24px;overflow:hidden;border:1px solid rgba(255,255,255,0.08)">
+  <tr>
+    <td style="background:linear-gradient(135deg,#7B61FF 0%,#00D9FF 100%);padding:36px;text-align:center">
+      <p style="margin:0 0 10px;font-size:40px">🎬</p>
+      <p style="margin:0;color:white;font-size:28px;font-weight:900;letter-spacing:-0.5px">daylo<span style="opacity:0.7">.</span></p>
+      <p style="margin:6px 0 0;color:rgba(255,255,255,0.65);font-size:13px;font-weight:500">Jeden Tag. Eine Person. Dein Leben.</p>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:40px 36px;text-align:center">
+      <h2 style="color:white;font-size:22px;font-weight:800;margin:0 0 12px">Dein Bestätigungscode</h2>
+      <p style="color:#8E8E93;font-size:15px;margin:0 0 32px;line-height:1.65">
+        Gib diesen Code in der App ein, um dein Konto zu aktivieren.
+      </p>
+      <div style="display:inline-block;background:rgba(123,97,255,0.14);border:2px solid rgba(123,97,255,0.4);border-radius:20px;padding:22px 36px;margin-bottom:28px">
+        <span style="font-size:50px;font-weight:900;letter-spacing:14px;color:#7B61FF;font-variant-numeric:tabular-nums">${code}</span>
+      </div>
+      <p style="color:#8E8E93;font-size:13px;margin:0 0 6px">
+        Gültig für <strong style="color:white">15 Minuten</strong>.
+      </p>
+      <p style="color:#3A3A3C;font-size:12px;margin:0">
+        Kein Konto erstellt? Einfach ignorieren.
+      </p>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:18px 36px;border-top:1px solid rgba(255,255,255,0.06);text-align:center">
+      <p style="color:#3A3A3C;font-size:11px;margin:0">© ${new Date().getFullYear()} daylo · Dein täglicher Vlog</p>
+    </td>
+  </tr>
+</table>
+</td></tr></table>
+</body></html>`
 }
 
 // ── VAPID keys (auto-generate once, persist in DB) ────────────────────────────
@@ -91,13 +128,47 @@ let ffmpegAvailable = false
   })
 })()
 
+// ── auto-editor detection ─────────────────────────────────────────────────────
+// auto-editor intelligently removes silence + low-motion segments per clip.
+// Falls back to ffmpeg-only silence detection when not installed.
+let autoEditorCmd = null   // e.g. ['auto-editor'] or ['python', '-m', 'auto_editor']
+
+;(async () => {
+  for (const cmd of [['auto-editor'], ['python', '-m', 'auto_editor'], ['python3', '-m', 'auto_editor']]) {
+    try {
+      await new Promise((resolve, reject) => {
+        const p = spawn(cmd[0], [...cmd.slice(1), '--version'], { stdio: 'ignore' })
+        p.on('close', code => code === 0 ? resolve() : reject(new Error()))
+        p.on('error', reject)
+      })
+      autoEditorCmd = cmd
+      console.log(`✅ auto-editor (${cmd.join(' ')}) — intelligenter Schnitt aktiv`)
+      break
+    } catch {}
+  }
+  if (!autoEditorCmd) console.log('⚠️  auto-editor nicht gefunden — führe "pip install auto-editor" aus')
+})()
+
+function runAutoEditor(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      ...autoEditorCmd.slice(1),
+      inputPath,
+      '--no-open',
+      '-o', outputPath,
+    ]
+    const proc  = spawn(autoEditorCmd[0], args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('auto-editor timeout')) }, 90_000)
+    proc.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`auto-editor exit ${code}`)) })
+    proc.on('error', e   => { clearTimeout(timer); reject(e) })
+  })
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// KI-Schnitt Pro — multi-stage professional pipeline
-//  Stage 1 (per clip):  silence-edge trim · speed-ramp · stabilise · denoise · normalise
-//  Stage 2 (assembly):  xfade transitions (varied per cut) · teal-orange curves
-//                       sharpen · vignette · global fade-in/out
-//  Stage 3 (audio):     per-clip pre-normalise → acrossfade → EBU R128 mastering
-//  Stage 4 (finish):    auto-thumbnail at sharpest/most-interesting frame
+// KI-Schnitt — single-pass pipeline
+//  Pre-pass (auto-editor): intelligent silence + motion cut-point detection
+//  Main pass (ffmpeg):     trim · speed-ramp · stabilise · denoise · scale ·
+//                          xfade transitions · cinematic grade · audio master
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Low-level helpers ─────────────────────────────────────────────────────────
@@ -129,12 +200,12 @@ function probeDuration(filePath) {
 // ── Stage 1 helpers ───────────────────────────────────────────────────────────
 
 // Detect how much silence to trim from the START and END of a clip.
-// Only trims up to 1.2 s per side to avoid cutting real content.
+// Conservative: only removes clear dead air at edges, never real content.
 function detectSilenceTrim(filePath, clipDur) {
   return new Promise(resolve => {
     const proc = spawn(FFMPEG_BIN, [
       '-i', filePath,
-      '-af', 'silencedetect=noise=-38dB:d=0.2',
+      '-af', 'silencedetect=noise=-42dB:d=0.25',
       '-f', 'null', '-',
     ], { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
@@ -145,196 +216,231 @@ function detectSilenceTrim(filePath, clipDur) {
       const firstEnd = stderr.match(/silence_end:\s*([\d.]+)/)
       if (firstEnd) {
         const se = parseFloat(firstEnd[1])
-        if (se < 1.2) trimStart = se
+        if (se < 0.8) trimStart = se
       }
       // silence at the very end
       const allStarts = [...stderr.matchAll(/silence_start:\s*([\d.]+)/g)]
       if (allStarts.length) {
         const lastSS = parseFloat(allStarts[allStarts.length - 1][1])
         const tail   = clipDur - lastSS
-        if (tail > 0.1 && tail < 1.2) trimEnd = tail
+        if (tail > 0.1 && tail < 0.8) trimEnd = tail
       }
-      resolve({ trimStart: Math.min(trimStart, 1.0), trimEnd: Math.min(trimEnd, 1.0) })
+      resolve({ trimStart: Math.min(trimStart, 0.6), trimEnd: Math.min(trimEnd, 0.6) })
     })
     proc.on('error', () => resolve({ trimStart: 0, trimEnd: 0 }))
   })
 }
 
-// Full per-clip processing:
-//   • trim silence edges  → snappier pacing
-//   • speed-ramp (> 7 s)  → boring-part skip at 1.3×
-//   • deshake              → smooth out handheld wobble
-//   • hqdn3d               → reduce phone-camera noise
-//   • scale + crop         → normalise to 720×1280 (free) or 1080×1920 (premium HD)
-async function processClipSmart(inputPath, outputPath, rawDur, hd = false) {
-  const { trimStart, trimEnd } = await detectSilenceTrim(inputPath, rawDur)
-  const effectiveDur = rawDur - trimStart - trimEnd
-  const needsTrim    = trimStart > 0.05 || trimEnd > 0.05
-  const isLong       = effectiveDur > 7   // speed-ramp long clips
-
-  const vf = []
-  const af = []
-
-  // 1. Trim silence edges (video + audio in sync)
-  if (needsTrim) {
-    const s = trimStart.toFixed(3)
-    const e = (rawDur - trimEnd).toFixed(3)
-    vf.push(`trim=start=${s}:end=${e},setpts=PTS-STARTPTS`)
-    af.push(`atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS`)
-  }
-
-  // 2. Speed-ramp: long clips 1.3× faster (reduce to ~5 s max)
-  if (isLong) {
-    vf.push('setpts=0.77*PTS')   // 1/0.77 ≈ 1.3×
-    af.push('atempo=1.3')
-  }
-
-  // 3. Stabilise handheld footage
-  vf.push('deshake=rx=24:ry=24:edge=mirror:blocksize=8')
-
-  // 4. Temporal denoise (phone camera noise / compression artefacts)
-  vf.push('hqdn3d=3:3:2:2')
-
-  // 5. Normalise to 720×1280 (free) or 1080×1920 (premium HD) portrait 9:16
-  if (hd) {
-    vf.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
-  } else {
-    vf.push('scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280')
-  }
-
-  // 6. Per-clip audio level normalise (prevents huge volume jumps between clips)
-  af.push('dynaudnorm=f=200:g=15:p=0.9')
-
-  const args = ['-i', inputPath]
-  if (vf.length) args.push('-vf', vf.join(','))
-  if (af.length) args.push('-af', af.join(','))
-  args.push(
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '21',
-    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
-    '-y', outputPath,
-  )
-  return ffrun(args)
-}
-
-// ── Stage 2 + 3 helpers ───────────────────────────────────────────────────────
-
-// Varied transitions — mix cinematic styles so every cut feels different
+// Cinematic transitions — snappy cuts feel more dynamic
 const TRANSITIONS = [
-  'fade',        // 0: smooth alpha blend
-  'smoothleft',  // 1: wipe from right to left
-  'smoothright', // 2: wipe from left to right
-  'smoothup',    // 3: wipe up
-  'fadeblack',   // 4: dip to black
-  'slideup',     // 5: slide frame up
-  'slideleft',   // 6: slide frame left
-  'dissolve',    // 7: pixel dissolve (organic)
+  'fade',
+  'smoothleft',
+  'smoothright',
+  'fadeblack',
+  'dissolve',
+  'slideup',
+  'slideleft',
+  'smoothup',
 ]
 
-// Teal-orange cinematic grade — the standard look of Instagram Reels / TikTok
-// Curves: lift blue shadows (teal) + pull blue highlights (warm/orange)
-//         slight red boost in highlights · gentle green pull
+// Cinematic grade — subtle warmth + gentle sharpening, natural not Instagram-overdone
 const CURVE_V = [
-  // colour grade: teal-orange split-tone
-  "curves=r='0/0 0.25/0.26 0.75/0.81 1/0.97':g='0/0 0.25/0.23 0.75/0.74 1/0.91':b='0/0.04 0.25/0.27 0.75/0.65 1/0.80'",
-  // vibrance / saturation boost on top of curves
-  'eq=saturation=1.25:contrast=1.06:brightness=0.01',
-  // luminance-only sharpen (keeps colour noise down)
-  'unsharp=5:5:0.7:0:0:0',
-  // subtle cinematic vignette
-  'vignette=PI/4:eval=init',
+  "curves=r='0/0 0.25/0.255 0.75/0.775 1/0.985':g='0/0 0.25/0.248 0.75/0.755 1/0.955':b='0/0.015 0.25/0.255 0.75/0.695 1/0.855'",
+  'eq=saturation=1.12:contrast=1.04:brightness=0.01',
+  'unsharp=5:5:0.45:0:0:0',
+  'vignette=PI/5:eval=init',
 ].join(',')
 
 const AUDIO_MASTER = [
   'loudnorm=I=-14:TP=-2:LRA=11',
-  'acompressor=threshold=-18dB:ratio=3:attack=5:release=60:knee=3',
+  'acompressor=threshold=-16dB:ratio=2:attack=8:release=100:knee=5',
+  'alimiter=limit=-1dB:attack=5:release=50',
 ].join(',')
 
-// Build the complete filter_complex:
-//   • per-clip xfade transitions (varied by index)
-//   • global fade-in (0.5 s) + fade-out (0.5 s)
-//   • teal-orange curves + grade + sharpen + vignette
-//   • audio: acrossfade + EBU R128 loudness mastering
-function buildMasterFilterComplex(n, durations, fadeDur, totalDur) {
+// ── Single-pass encode ────────────────────────────────────────────────────────
+// All per-clip processing (trim, vidstab/deshake, denoise, scale) + transitions
+// + grade in ONE ffmpeg call → no intermediate files, no double compression.
+function singlePassEncode(clips, outputPath, hd = false) {
+  const n = clips.length
+  const resolution = hd
+    ? 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920'
+    : 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280'
+
   const fc = []
+  const procDurs = []
+
+  // Per-clip filter chains
+  clips.forEach(({ rawDur, trim, trfPath, crop }, i) => {
+    const effDur = rawDur - trim.trimStart - trim.trimEnd
+    const isLong = effDur > 12
+    const pd     = Math.max(0.1, effDur * (isLong ? 0.833 : 1))
+    procDurs.push(pd)
+
+    const vf = [], af = []
+
+    // Normalise to CFR — phones often record VFR which breaks vidstab + xfade
+    vf.push('fps=30')
+
+    if (trim.trimStart > 0.05 || trim.trimEnd > 0.05) {
+      const s = trim.trimStart.toFixed(3)
+      const e = (rawDur - trim.trimEnd).toFixed(3)
+      vf.push(`trim=start=${s}:end=${e},setpts=PTS-STARTPTS`)
+      af.push(`atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS`)
+    }
+    if (isLong) { vf.push('setpts=0.833*PTS'); af.push('atempo=1.2') }
+
+    // vidstab (2-pass) if analysis succeeded, else deshake fallback
+    if (trfPath) {
+      const trf = trfPath.replace(/\\/g, '/')
+      vf.push(`vidstabtransform=input=${trf}:smoothing=30:optzoom=1:interpol=bicubic`)
+    } else {
+      vf.push('deshake=rx=16:ry=16:edge=mirror:blocksize=16')
+    }
+
+    // Temporal denoise
+    vf.push('hqdn3d=2:2:1.5:1.5')
+
+    // Auto-exposure: stretch histogram to full range, smooth over 30 frames
+    // Fixes dark phone footage / bad white balance without looking artificial
+    vf.push('normalize=blackpt=black:whitept=white:smoothing=30')
+
+    // Remove black bars detected in pre-pass, then scale to target resolution
+    if (crop) vf.push(`crop=${crop.w}:${crop.h}:${crop.x}:${crop.y}`)
+    vf.push(resolution)
+
+    // FFT-based noise reduction (removes mic hiss, wind, background noise)
+    af.push('afftdn=nr=8:nf=-25')
+    af.push('dynaudnorm=f=200:g=15:p=0.9')
+
+    fc.push(`[${i}:v]${vf.join(',')}[cv${i}]`)
+    fc.push(`[${i}:a]${af.join(',')}[ca${i}]`)
+  })
+
+  // Transition timing
+  const fadeDur  = Math.min(0.3, Math.min(...procDurs) / 2.5)
+  const totalDur = procDurs.reduce((s, d, i) => s + d - (i < n - 1 ? fadeDur : 0), 0)
+
+  // ── Ending constants ─────────────────────────────────────────────────────────
+  const FADE_IN     = 0.5   // gentle fade-in
+  const HOLD_END    = 0.6   // freeze last frame before fade
+  const FADE_OUT    = 1.2   // slow, cinematic fade to black (was 0.4s)
+  const extDur      = totalDur + HOLD_END
+  const fo          = Math.max(0, extDur - FADE_OUT).toFixed(3)
+  // Audio fades out 0.3 s before the freeze, then silence fills the hold
+  const audioFadeAt = Math.max(0, totalDur - 0.3).toFixed(3)
+
+  // Build ending filter:
+  //   1. fade-in at start
+  //   2. cinematic colour grade (CURVE_V)
+  //   3. tpad: clone last frame for HOLD_END seconds (freeze frame)
+  //   4. fade to black over FADE_OUT seconds
+  const buildVideoEnd = (src) =>
+    `${src}fade=t=in:st=0:d=${FADE_IN},${CURVE_V},tpad=stop_mode=clone:stop_duration=${HOLD_END},fade=t=out:st=${fo}:d=${FADE_OUT}[vout]`
+
+  const buildAudioEnd = (src) =>
+    `${src}${AUDIO_MASTER},afade=t=out:st=${audioFadeAt}:d=0.3,apad=pad_dur=${HOLD_END}[aout]`
 
   if (n === 1) {
-    const fadeOut = Math.max(0, totalDur - 0.5).toFixed(3)
-    fc.push(`[0:v]fade=t=in:st=0:d=0.5,fade=t=out:st=${fadeOut}:d=0.5,${CURVE_V}[vout]`)
-    fc.push(`[0:a]${AUDIO_MASTER}[aout]`)
-    return { fc: fc.join(';') }
+    fc.push(buildVideoEnd('[cv0]'))
+    fc.push(buildAudioEnd('[ca0]'))
+  } else {
+    let prevV = '[cv0]', cumOff = 0
+    for (let i = 1; i < n; i++) {
+      cumOff += procDurs[i - 1] - fadeDur
+      const trans  = TRANSITIONS[i % TRANSITIONS.length]
+      const offset = Math.max(0, cumOff).toFixed(3)
+      const tag    = i < n - 1 ? `[xv${i}]` : '[xvlast]'
+      fc.push(`${prevV}[cv${i}]xfade=transition=${trans}:duration=${fadeDur.toFixed(3)}:offset=${offset}${tag}`)
+      prevV = tag
+    }
+    fc.push(buildVideoEnd('[xvlast]'))
+
+    let prevA = '[ca0]'
+    for (let i = 1; i < n; i++) {
+      const tag = i < n - 1 ? `[xa${i}]` : '[xalast]'
+      fc.push(`${prevA}[ca${i}]acrossfade=d=${fadeDur.toFixed(3)}:c1=tri:c2=tri${tag}`)
+      prevA = tag
+    }
+    fc.push(buildAudioEnd('[xalast]'))
   }
 
-  // ── Video: chain xfade transitions ──
-  let prevV = '[0:v]'
-  let cumOffset = 0
-  for (let i = 1; i < n; i++) {
-    cumOffset += durations[i - 1] - fadeDur
-    const trans  = TRANSITIONS[i % TRANSITIONS.length]
-    const offset = Math.max(0, cumOffset).toFixed(3)
-    const outTag = i < n - 1 ? `[xv${i}]` : '[xvlast]'
-    fc.push(`${prevV}[${i}:v]xfade=transition=${trans}:duration=${fadeDur.toFixed(3)}:offset=${offset}${outTag}`)
-    prevV = outTag
-  }
-
-  // Apply fade-in/fade-out + cinematic grade to final merged stream
-  const fadeOut = Math.max(0, totalDur - 0.5).toFixed(3)
-  fc.push(`[xvlast]fade=t=in:st=0:d=0.5,fade=t=out:st=${fadeOut}:d=0.5,${CURVE_V}[vout]`)
-
-  // ── Audio: chain acrossfades ──
-  let prevA = '[0:a]'
-  for (let i = 1; i < n; i++) {
-    const outTag = i < n - 1 ? `[xa${i}]` : '[xalast]'
-    fc.push(`${prevA}[${i}:a]acrossfade=d=${fadeDur.toFixed(3)}:c1=tri:c2=tri${outTag}`)
-    prevA = outTag
-  }
-  // EBU R128 loudness mastering on merged audio
-  fc.push(`[xalast]${AUDIO_MASTER}[aout]`)
-
-  return { fc: fc.join(';') }
-}
-
-// Final high-quality encode with all transitions + grade
-function finalEncode(normPaths, normDurations, outputPath, hd = false) {
-  const n       = normPaths.length
-  const minDur  = Math.min(...normDurations.filter(d => d > 0))
-  const fadeDur = Math.min(0.45, minDur / 2.2)
-  const totalDur = normDurations.reduce((s, d, i) => s + d - (i < n - 1 ? fadeDur : 0), 0)
-
-  const { fc } = buildMasterFilterComplex(n, normDurations, fadeDur, totalDur)
-  const inputs  = normPaths.flatMap(p => ['-i', p])
-
+  const inputs = clips.flatMap(c => ['-i', c.path])
   return ffrun([
     ...inputs,
-    '-filter_complex', fc,
+    '-filter_complex', fc.join(';'),
     '-map', '[vout]', '-map', '[aout]',
-    '-c:v', 'libx264', '-preset', hd ? 'medium' : 'fast', '-crf', hd ? '18' : '20',
+    '-c:v', 'libx264', '-preset', hd ? 'medium' : 'fast', '-crf', hd ? '18' : '19',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',
     '-y', outputPath,
-  ])
+  ], 300_000)
 }
 
-// ── Stage 4: thumbnail ────────────────────────────────────────────────────────
+// ── Black-bar detection ───────────────────────────────────────────────────────
+// Scans the first 3 s of a clip to find any letterbox/pillarbox borders.
+function detectCrop(clipPath) {
+  return new Promise(resolve => {
+    const proc = spawn(FFMPEG_BIN, [
+      '-i', clipPath, '-t', '3',
+      '-vf', 'cropdetect=24:16:0',
+      '-f', 'null', '-',
+    ], { stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    proc.stderr.on('data', d => { stderr += d.toString() })
+    proc.on('close', () => {
+      const matches = [...stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)]
+      if (!matches.length) return resolve(null)
+      const last = matches[matches.length - 1]
+      resolve({ w: +last[1], h: +last[2], x: +last[3], y: +last[4] })
+    })
+    proc.on('error', () => resolve(null))
+  })
+}
 
-// Extract the sharpest frame around seekSecs (sample 3 nearby frames, pick best)
+// ── Thumbnail ─────────────────────────────────────────────────────────────────
+// Samples 5 frames across the video, picks the one with the largest JPEG size
+// (larger size = more detail = typically the sharpest/most interesting frame).
 async function extractBestThumbnail(videoPath, thumbPath, seekSecs) {
-  const seek = Math.max(0.5, seekSecs).toFixed(2)
-  // Use select filter to find the frame with the highest Laplacian variance (sharpness)
-  return ffrun([
-    '-ss', seek, '-i', videoPath,
-    '-vf', 'select=gt(scene\\,0.05)',
-    '-vframes', '1', '-q:v', '1',
-    '-y', thumbPath,
-  ]).catch(() => ffrun([
-    // Fallback: just grab the frame at seekSecs without scene filter
-    '-ss', seek, '-i', videoPath,
-    '-vframes', '1', '-q:v', '1',
-    '-y', thumbPath,
-  ]))
+  const dur = await probeDuration(videoPath)
+  const fallback = () => ffrun([
+    '-ss', Math.max(0.5, seekSecs).toFixed(2), '-i', videoPath,
+    '-vframes', '1', '-q:v', '1', '-y', thumbPath,
+  ])
+
+  if (!dur || dur < 1) return fallback()
+
+  const checkpoints = [0.15, 0.28, 0.42, 0.56, 0.70]
+    .map(p => Math.min(Math.max(0.5, dur * p), dur - 0.3).toFixed(2))
+
+  const results = await Promise.allSettled(checkpoints.map(async (t, i) => {
+    const cand = thumbPath.replace(/\.jpg$/, `_c${i}.jpg`)
+    await ffrun(['-ss', t, '-i', videoPath, '-vframes', '1', '-q:v', '1', '-y', cand])
+    return cand
+  }))
+
+  const valid = results.filter(r => r.status === 'fulfilled').map(r => r.value)
+  if (!valid.length) return fallback()
+
+  // Pick the frame with most JPEG detail (largest file = most high-frequency content)
+  let best = valid[0], bestSize = 0
+  for (const c of valid) {
+    try {
+      const sz = fs.statSync(c).size
+      if (sz > bestSize) { bestSize = sz; best = c }
+    } catch {}
+  }
+
+  try {
+    fs.renameSync(best, thumbPath)
+  } catch {
+    await fallback()
+  }
+  // Cleanup leftover candidates
+  for (const c of valid) if (c !== thumbPath) try { fs.unlinkSync(c) } catch {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// runKiSchnitt — orchestrates the full pipeline
+// runKiSchnitt
 // ═══════════════════════════════════════════════════════════════════════════════
 async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration, hd = false) {
   const userDir = path.join(UPLOADS_DIR, userId)
@@ -344,44 +450,80 @@ async function runKiSchnitt(vlogId, userId, clipPaths, totalDuration, hd = false
 
   try {
     fs.mkdirSync(tmpDir, { recursive: true })
+    let workClips = [...clipPaths]
 
-    // ── Stage 1: per-clip analysis + smart processing ──────────────────────────
-    const rawDurations = await Promise.all(clipPaths.map(p => probeDuration(p)))
+    // ── Pre-pass 1: auto-editor ──────────────────────────────────────────────
+    if (autoEditorCmd) {
+      const results = await Promise.allSettled(
+        workClips.map(async (p, i) => {
+          const ext   = path.extname(p) || '.webm'
+          const aeOut = path.join(tmpDir, `ae${i}${ext}`)
+          await runAutoEditor(p, aeOut)
+          return aeOut
+        })
+      )
+      workClips = results.map((r, i) => r.status === 'fulfilled' ? r.value : workClips[i])
+      console.log(`🤖 auto-editor: ${results.filter(r => r.status === 'fulfilled').length}/${clipPaths.length} clips`)
+    }
 
-    // Drop clips < 0.5 s (too short to be meaningful)
-    const validPairs = clipPaths
-      .map((p, i) => ({ p, d: rawDurations[i] }))
-      .filter(x => x.d >= 0.5)
-    if (!validPairs.length) validPairs.push({ p: clipPaths[0], d: rawDurations[0] || 1 })
+    // ── Probe durations + optional silence detection ─────────────────────────
+    const rawDurations = await Promise.all(workClips.map(p => probeDuration(p)))
+    const silenceTrims = autoEditorCmd
+      ? workClips.map(() => ({ trimStart: 0, trimEnd: 0 }))
+      : await Promise.all(workClips.map((p, i) => detectSilenceTrim(p, rawDurations[i])))
 
-    console.log(`🎬 KI-Schnitt: ${validPairs.length}/${clipPaths.length} clips valid`)
+    let clips = workClips
+      .map((p, i) => ({ path: p, rawDur: rawDurations[i], trim: silenceTrims[i] }))
+      .filter(c => c.rawDur >= 0.5)
+    if (!clips.length) {
+      clips = [{ path: workClips[0], rawDur: rawDurations[0] || 1, trim: { trimStart: 0, trimEnd: 0 } }]
+    }
 
-    // Process each clip in parallel (ultrafast encode → fast)
-    const normPaths = await Promise.all(validPairs.map(({ p, d }, i) => {
-      const np = path.join(tmpDir, `n${i}.mp4`)
-      return processClipSmart(p, np, d, hd).then(() => np)
+    // ── Pre-pass 2: vidstab analysis (parallel, no encode) ───────────────────
+    // vidstab analyses motion across the full clip before stabilizing — far
+    // better than deshake which works frame-by-frame and creates warping.
+    const stabResults = await Promise.allSettled(
+      clips.map(async (c, i) => {
+        const trfPath = path.join(tmpDir, `stab${i}.trf`)
+        await ffrun([
+          '-i', c.path,
+          '-vf', `vidstabdetect=shakiness=8:accuracy=15:result=${trfPath.replace(/\\/g, '/')}`,
+          '-f', 'null', '-',
+        ], 60_000)
+        return trfPath
+      })
+    )
+    clips = clips.map((c, i) => ({
+      ...c,
+      trfPath: stabResults[i].status === 'fulfilled' ? stabResults[i].value : null,
     }))
+    console.log(`🔭 vidstab: ${stabResults.filter(r => r.status === 'fulfilled').length}/${clips.length} clips analysiert`)
 
-    // ── Stage 2 + 3: probe processed durations, encode with transitions ────────
-    const normDurations = await Promise.all(normPaths.map(p => probeDuration(p)))
-    await finalEncode(normPaths, normDurations, outPath, hd)
+    // ── Pre-pass 3: black-bar detection (parallel, reads first 3 s only) ─────
+    const cropResults = await Promise.allSettled(clips.map(c => detectCrop(c.path)))
+    clips = clips.map((c, i) => ({
+      ...c,
+      crop: cropResults[i].status === 'fulfilled' ? cropResults[i].value : null,
+    }))
+    const cropsFound = cropResults.filter(r => r.status === 'fulfilled' && r.value).length
+    if (cropsFound) console.log(`✂️  cropdetect: ${cropsFound} clips haben schwarze Ränder`)
 
-    // ── Stage 4: extract thumbnail ─────────────────────────────────────────────
+    console.log(`🎬 KI-Schnitt${autoEditorCmd ? ' ✨' : ''}: ${clips.length} clips → single-pass encode`)
+
+    await singlePassEncode(clips, outPath, hd)
+
     const realDuration = await probeDuration(outPath)
     const thumbName    = `${vlogId}_thumb.jpg`
     const thumbPath    = path.join(userDir, thumbName)
     await extractBestThumbnail(outPath, thumbPath, (realDuration || totalDuration || 10) * 0.28)
 
-    // ── Finalise ───────────────────────────────────────────────────────────────
     db.prepare('UPDATE vlogs SET status=?, processed_filename=?, thumbnail=? WHERE id=?')
       .run('ready', kiName, thumbName, vlogId)
+    console.log(`✅ KI-Schnitt fertig: ${kiName} (${clips.length} clips → ${Math.round(realDuration || 0)}s)`)
 
-    const infoClips = normDurations.map(d => `${d.toFixed(1)}s`).join(' + ')
-    console.log(`✅ KI-Schnitt fertig: ${kiName} (${infoClips} → ${Math.round(realDuration)}s)`)
-
-    // Cleanup temp dir and raw uploads
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-    for (const { p } of validPairs) { try { fs.unlinkSync(p) } catch {} }
+    // Cleanup
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    for (const p of clipPaths) { try { fs.unlinkSync(p) } catch {} }
 
   } catch (err) {
     console.error(`❌ KI-Schnitt Fehler (${vlogId}):`, err.message)
@@ -747,16 +889,8 @@ export function registerRoutes(api) {
       .run(crypto.randomUUID(), email, username, hash, code, Date.now())
 
     console.log(`\n🔑  Verifikationscode für ${email}: ${code}\n`)
-    sendEmail(
-      email,
-      'Dein daylo Bestätigungscode',
-      `<div style="font-family:sans-serif;max-width:400px;margin:auto;padding:24px">
-        <h2 style="color:#7B61FF;margin-bottom:8px">Willkommen bei daylo! 🎬</h2>
-        <p style="color:#555;margin-bottom:24px">Gib diesen Code in der App ein, um dein Konto zu bestätigen:</p>
-        <div style="font-size:42px;font-weight:900;letter-spacing:10px;color:#7B61FF;padding:24px;background:#f0eeff;border-radius:16px;text-align:center">${code}</div>
-        <p style="color:#999;font-size:12px;margin-top:20px">Dieser Code ist 24 Stunden gültig.</p>
-      </div>`
-    ).catch(err => console.warn('Mail-Fehler:', err.message))
+    sendEmail(email, 'Dein daylo Bestätigungscode', emailVerifyHtml(code))
+      .catch(err => console.warn('Mail-Fehler:', err.message))
 
     res.json({ success: true })
   })
@@ -765,13 +899,28 @@ export function registerRoutes(api) {
     const email = sanitizeText(req.body?.email ?? '', 254).toLowerCase()
     const code  = sanitizeText(req.body?.code ?? '', 10)
     const u = db.prepare('SELECT * FROM users WHERE email=?').get(email)
-    if (!u) return res.status(404).json({ error: 'Benutzer nicht gefunden.' })
-    if (u.code !== code) return res.status(400).json({ error: 'Falscher Code.' })
+    if (!u)            return res.status(404).json({ error: 'Benutzer nicht gefunden.' })
+    if (u.verified)    return res.status(400).json({ error: 'Konto bereits verifiziert.' })
+    if (u.code !== code) return res.status(400).json({ error: 'Falscher Code. Bitte nochmal prüfen.' })
     db.prepare('UPDATE users SET verified=1, code=NULL WHERE id=?').run(u.id)
     const { hash, code: _c, last_seen, ...safe } = u
     safe.verified = true
     const token = jwt.sign(safe, JWT_SECRET, { expiresIn: '30d' })
     res.json({ success: true, token, user: safe })
+  })
+
+  api.post('/api/auth/resend-code', rateLimit, async (req, res) => {
+    const email = sanitizeText(req.body?.email ?? '', 254).toLowerCase()
+    if (!email) return res.status(400).json({ error: 'E-Mail erforderlich.' })
+    const u = db.prepare('SELECT * FROM users WHERE email=?').get(email)
+    if (!u)         return res.status(404).json({ error: 'Benutzer nicht gefunden.' })
+    if (u.verified) return res.status(400).json({ error: 'Konto bereits verifiziert.' })
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    db.prepare('UPDATE users SET code=? WHERE id=?').run(code, u.id)
+    console.log(`\n🔑  Neuer Code für ${email}: ${code}\n`)
+    sendEmail(email, 'Dein neuer daylo Code', emailVerifyHtml(code))
+      .catch(err => console.warn('Mail-Fehler:', err.message))
+    res.json({ success: true })
   })
 
   api.post('/api/auth/login', rateLimit, async (req, res) => {
